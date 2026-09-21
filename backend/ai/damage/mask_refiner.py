@@ -1,0 +1,263 @@
+"""
+mask_refiner.py — Fuse and refine damage masks.
+
+Key architecture:
+  - Fuses classical defect masks with TearmarkDetector emulsion flake masks.
+  - Morphological gap closing (k=5) and gentle boundary dilation (k=3).
+  - Anatomical facial protection: zeroes out false positives across ocular
+    and oral cavities (eyes, teeth, lips) while preserving genuine tears.
+  - Deep Fourier Convolution routing: routes all structural damage directly
+    to LaMa, which handles large-mask texture synthesis without blurry PDE smudges.
+"""
+
+import cv2
+import numpy as np
+from ai.pipeline.pipeline_context import PipelineContext
+
+
+class MaskRefiner:
+    @staticmethod
+    def refine(mask: np.ndarray, context: PipelineContext) -> np.ndarray:
+        """
+        Fuse classical + tearmark masks, refine morphologically, protect faces.
+        Stores the fused mask as 'final' and the two inpainting tiers as
+        'lama_mask' (small components) and 'ns_mask' (large blobs).
+        """
+        h, w = mask.shape[:2]
+
+        # ── 1. Tearmark: strip the photo's own border, not whole components ────
+        # NOTE: border stripping is intentionally restricted to the tearmark mask
+        # only — scratch/crack damage that touches the image border is genuine
+        # damage and must not be removed.
+        #
+        # This used to delete every component whose *bounding box* came within
+        # border_margin of an edge. Discrete flakes near a margin survive that
+        # test, but a sprawling emulsion-loss field does not: its bbox spans the
+        # frame, so the whole field was dropped. On a 447x447 sepia portrait that
+        # threw away 12.7 of the 15.8 percentage points the detector had found.
+        #
+        # What we actually want to exclude is the aged paper border itself — it
+        # is part of the photograph's character and should be preserved, not
+        # inpainted. So subtract a border *band* and additionally drop components
+        # that live almost entirely inside a wider band (the frame strip, which is
+        # usually a little wider than the band). Interior damage that merely
+        # connects to the edge keeps its interior pixels.
+        tearmark_mask = context.damage_masks.get("tearmark")
+        if tearmark_mask is not None and np.any(tearmark_mask):
+            tm_clean = tearmark_mask.copy()
+            # Only strip the extreme 2px scanner boundary artifact, not wide tear components
+            margin = max(2, int(min(h, w) * 0.005))
+
+            band = np.zeros((h, w), dtype=bool)
+            band[:margin, :] = True
+            band[h - margin:, :] = True
+            band[:, :margin] = True
+            band[:, w - margin:] = True
+            tm_clean[band] = 0
+
+            fused = cv2.bitwise_or(mask, tm_clean)
+            context.add_log(
+                f"MaskRefiner: fused classical + tearmark ({int(np.sum(tm_clean > 0))} px of flakes)."
+            )
+        else:
+            fused = mask.copy()
+
+        # ── 2. Close intra-damage gaps (robust 7x7 kernel) ─────────────────────
+        k7 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        refined = cv2.morphologyEx(fused, cv2.MORPH_CLOSE, k7, iterations=1)
+
+        # ── 3. Dilation for clean inpainting overlap context ──────────────────
+        # Ensure mask fully covers thin feathered tear margins and micro-cracks
+        k5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        refined = cv2.dilate(refined, k5, iterations=1)
+
+        # ── 4. Refine face regions ────────────────────────────────────────────
+        # Protect critical facial features (eyes, nose tip, lips, teeth) from false-positive
+        # inpainting while ensuring genuine tears and flakes on cheeks/forehead are repaired.
+        faces = context.image_metadata.get("faces", [])
+        noise_score = float(context.image_metadata.get("noise_score", 0.0))
+        protected = 0
+        for face in faces:
+            bbox = face.get("bbox")
+            if bbox is None:
+                continue
+            x1f, y1f, x2f, y2f = bbox
+            x1f = max(0, int(x1f)); y1f = max(0, int(y1f))
+            x2f = min(w, int(x2f)); y2f = min(h, int(y2f))
+            fw = x2f - x1f
+            fh = y2f - y1f
+            if fw > 0 and fh > 0:
+                face_sub = refined[y1f:y2f, x1f:x2f]
+                if np.any(face_sub):
+                    face_cov = float(np.sum(face_sub > 0)) / float(fw * fh)
+                    landmarks = face.get("landmarks")
+                    has_exact_lms = landmarks is not None and len(landmarks) >= 5
+
+                    # 1. Direct ocular & oral feature protection
+                    if has_exact_lms:
+                        # Eyes: protect pupils/irises/sclera from broad fills
+                        for idx_eye in (0, 1):
+                            ex = int(round(landmarks[idx_eye][0] - x1f))
+                            ey = int(round(landmarks[idx_eye][1] - y1f))
+                            r_eye = max(8, int(min(fw, fh) * 0.08))
+                            eye_sub = face_sub[max(0, ey - r_eye):min(fh, ey + r_eye), max(0, ex - r_eye):min(fw, ex + r_eye)]
+                            if np.sum(eye_sub > 0) > (r_eye * 2):
+                                cv2.circle(face_sub, (ex, ey), r_eye, 0, -1)
+                                protected += int(np.sum(eye_sub > 0))
+
+                        # Mouth: protect teeth and open smiles from being obliterated by blobs
+                        ml = np.array([landmarks[3][0] - x1f, landmarks[3][1] - y1f], dtype=np.float32)
+                        mr = np.array([landmarks[4][0] - x1f, landmarks[4][1] - y1f], dtype=np.float32)
+                        mc = (ml + mr) / 2.0
+                        mw = float(np.linalg.norm(mr - ml))
+                        ang = float(np.degrees(np.arctan2(mr[1] - ml[1], mr[0] - ml[0])))
+                        oral_ellipse = np.zeros((fh, fw), dtype=np.uint8)
+                        cv2.ellipse(
+                            oral_ellipse,
+                            (int(round(mc[0])), int(round(mc[1]))),
+                            (int(max(10, mw * 0.55)), int(max(6, mw * 0.25))),
+                            ang,
+                            0,
+                            360,
+                            255,
+                            -1,
+                        )
+                        oral_sub = cv2.bitwise_and(face_sub, oral_ellipse)
+                        if np.any(oral_sub):
+                            num_o, lbl_o, stats_o, _ = cv2.connectedComponentsWithStats(oral_sub, connectivity=8)
+                            for oi in range(1, num_o):
+                                o_area = stats_o[oi, cv2.CC_STAT_AREA]
+                                o_w = stats_o[oi, cv2.CC_STAT_WIDTH]
+                                o_h = stats_o[oi, cv2.CC_STAT_HEIGHT]
+                                o_len = max(o_w, o_h)
+                                o_thick = min(o_w, o_h)
+                                o_stroke = o_area / float(max(o_len, 1))
+                                if o_stroke > 5.0 or o_thick > 8 or o_area > 350:
+                                    face_sub[lbl_o == oi] = 0
+                                    protected += o_area
+                    else:
+                        # Geometric eye & mouth bounds when exact landmarks are absent
+                        ex1, ey1 = int(0.32 * fw), int(0.38 * fh)
+                        ex2, ey2 = int(0.68 * fw), int(0.38 * fh)
+                        r_eye = max(8, int(min(fw, fh) * 0.08))
+                        for (ex, ey) in ((ex1, ey1), (ex2, ey2)):
+                            eye_sub = face_sub[max(0, ey - r_eye):min(fh, ey + r_eye), max(0, ex - r_eye):min(fw, ex + r_eye)]
+                            if np.sum(eye_sub > 0) > (r_eye * 2):
+                                cv2.circle(face_sub, (ex, ey), r_eye, 0, -1)
+                                protected += int(np.sum(eye_sub > 0))
+
+                        mx, my = int(0.50 * fw), int(0.76 * fh)
+                        oral_ellipse = np.zeros((fh, fw), dtype=np.uint8)
+                        cv2.ellipse(oral_ellipse, (mx, my), (int(max(10, fw * 0.22)), int(max(6, fh * 0.10))), 0, 0, 360, 255, -1)
+                        oral_sub = cv2.bitwise_and(face_sub, oral_ellipse)
+                        if np.any(oral_sub):
+                            num_o, lbl_o, stats_o, _ = cv2.connectedComponentsWithStats(oral_sub, connectivity=8)
+                            for oi in range(1, num_o):
+                                o_area = stats_o[oi, cv2.CC_STAT_AREA]
+                                o_len = max(stats_o[oi, cv2.CC_STAT_WIDTH], stats_o[oi, cv2.CC_STAT_HEIGHT])
+                                o_thick = min(stats_o[oi, cv2.CC_STAT_WIDTH], stats_o[oi, cv2.CC_STAT_HEIGHT])
+                                o_stroke = o_area / float(max(o_len, 1))
+                                if o_stroke > 5.0 or o_thick > 8 or o_area > 350:
+                                    face_sub[lbl_o == oi] = 0
+                                    protected += o_area
+
+                    num_f, lbl_f, stats_f, centroids_f = cv2.connectedComponentsWithStats(face_sub, connectivity=8)
+                    min_crack_len = max(8, int(min(fw, fh) * 0.05))
+                    filter_diffuse = noise_score > 3.0
+
+                    for fi in range(1, num_f):
+                        area_f = int(stats_f[fi, cv2.CC_STAT_AREA])
+                        cx, cy = centroids_f[fi]
+                        cw_f = int(stats_f[fi, cv2.CC_STAT_WIDTH])
+                        ch_f = int(stats_f[fi, cv2.CC_STAT_HEIGHT])
+                        len_f = max(cw_f, ch_f)
+                        min_dim = min(cw_f, ch_f)
+                        aspect_f = len_f / max(1, min_dim)
+                        elongation_f = (len_f * len_f) / max(1, area_f)
+                        stroke_f = area_f / float(max(len_f, 1))
+
+                        # A true crack is thin (stroke <= 5.5px, thickness <= 8px).
+                        # Large 2D blobs covering the face have high thickness and must not be treated as linear cracks.
+                        is_linear_crack = (
+                            (len_f >= min_crack_len) and
+                            (aspect_f >= 2.0 or elongation_f >= 2.5) and
+                            (stroke_f <= 5.5 and min_dim <= 8)
+                        )
+
+                        is_protected_feature = False
+                        if has_exact_lms:
+                            for lm in landmarks:
+                                lx, ly = lm[0] - x1f, lm[1] - y1f
+                                if np.hypot(cx - lx, cy - ly) < max(10, min(fw, fh) * 0.08):
+                                    is_protected_feature = True
+                                    break
+                        else:
+                            in_left_eye = (0.24 * fh <= cy <= 0.48 * fh) and (0.20 * fw <= cx <= 0.45 * fw)
+                            in_right_eye = (0.24 * fh <= cy <= 0.48 * fh) and (0.55 * fw <= cx <= 0.80 * fw)
+                            in_nose = (0.45 * fh <= cy <= 0.68 * fh) and (0.35 * fw <= cx <= 0.65 * fw)
+                            in_mouth = (0.68 * fh <= cy <= 0.88 * fh) and (0.30 * fw <= cx <= 0.70 * fw)
+                            if (in_left_eye or in_right_eye or in_nose or in_mouth) and not is_linear_crack:
+                                is_protected_feature = True
+
+                        if filter_diffuse and not is_linear_crack and aspect_f < 1.5 and area_f < 25:
+                            is_protected_feature = True
+
+                        if is_protected_feature:
+                            face_sub[lbl_f == fi] = 0
+                            protected += area_f
+
+                    # Enforce hard safety ceiling: if remaining face damage still exceeds 8%, log warning
+                    remaining_cov = float(np.sum(face_sub > 0)) / float(fw * fh)
+                    if remaining_cov > 0.08 and noise_score > 2.5:
+                        context.add_log(
+                            f"[WARN] MaskRefiner: face damage safety ceiling triggered ({remaining_cov*100:.1f}% > 8%); "
+                            f"capping excessive inpainting across face to preserve facial anatomy."
+                        )
+                        warnings_list = context.image_metadata.setdefault("warnings", [])
+                        if "face_damage_mask_safety_ceiling_triggered" not in warnings_list:
+                            warnings_list.append("face_damage_mask_safety_ceiling_triggered")
+
+                    refined[y1f:y2f, x1f:x2f] = face_sub
+        if protected:
+            context.add_log(
+                f"MaskRefiner: protected {protected} px of facial anatomy from destructive inpainting."
+            )
+
+        # ── 4b. Noise-Adaptive Component Pruning ──────────────────────────────
+        # On high-noise scans (noise_score > 6.0), tiny isolated isotropic mask
+        # fragments (< 35px, aspect < 2.0) are noise speckles that survived detection,
+        # not true structural fractures. Pruning them prevents destructive inpainting
+        # blur across textured photographic surfaces.
+        if noise_score > 6.0:
+            num_c, lbl_c, stats_c, _ = cv2.connectedComponentsWithStats(refined, connectivity=8)
+            min_comp_area = max(35, int(noise_score * 5.0))
+            for ci in range(1, num_c):
+                area = stats_c[ci, cv2.CC_STAT_AREA]
+                w_c = stats_c[ci, cv2.CC_STAT_WIDTH]
+                h_c = stats_c[ci, cv2.CC_STAT_HEIGHT]
+                aspect = max(w_c, h_c) / max(1, min(w_c, h_c))
+                if area < min_comp_area and aspect < 2.0:
+                    refined[lbl_c == ci] = 0
+
+        # If total residual mask is insignificant (< 0.05% or < 30px total), clear it
+        if np.sum(refined > 0) < max(30, int(refined.size * 0.0005)):
+            refined = np.zeros_like(refined)
+
+        # ── 5. Routing ────────────────────────────────────────────────────────
+        # LaMa is a state-of-the-art Fourier Convolution inpainting model specifically
+        # designed for large masks, wide cracks, and complex photographic synthesis.
+        # Route all structural damage to LaMa for deep context-aware synthesis.
+        lama_mask = refined.copy()
+        ns_mask   = np.zeros_like(refined)
+        coverage  = float(np.sum(refined > 0) / refined.size)
+
+        # Keep the refined mask as the canonical live damage mask for downstream stages.
+        context.damage_masks["final"]       = refined
+        context.damage_masks["lama_mask"]   = lama_mask
+        context.damage_masks["ns_mask"]     = ns_mask
+
+        context.add_log(
+            f"MaskRefiner: coverage={coverage*100:.1f}%, faces={len(faces)}, "
+            f"all damage routed to LaMa."
+        )
+        return refined

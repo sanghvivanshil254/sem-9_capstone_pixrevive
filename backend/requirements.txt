@@ -1,0 +1,60 @@
+# PixRevive backend — runtime dependencies.
+#
+# Install into the venv the backend runs from:
+#     python -m pip install -r backend/requirements.txt
+#
+# NOTE on Torch: the pinned CUDA build is not on PyPI. Install it first from the
+# PyTorch index, then run this file (pip will keep the already-satisfied build):
+#     python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+# Omit the index URL for a CPU-only install; the pipeline falls back to CPU
+# automatically when torch.cuda.is_available() is False.
+
+# ── Web layer ────────────────────────────────────────────────────────────────
+# These were missing from backend/ai/requirements.txt, so a fresh environment
+# built from that file could not start the server at all.
+fastapi>=0.115
+uvicorn>=0.30
+python-multipart>=0.0.9      # required by FastAPI for UploadFile / Form
+pydantic>=2.7
+
+# ── Deep learning ────────────────────────────────────────────────────────────
+torch>=2.0.0
+torchvision>=0.15.0
+
+# ── Imaging / numerics ───────────────────────────────────────────────────────
+# opencv-CONTRIB, not plain opencv-python: Harmonizer uses cv2.ximgproc.guidedFilter,
+# which only ships in the contrib build. Installing both breaks the cv2 namespace.
+opencv-contrib-python==4.12.0.88
+pillow>=9.5.0
+numpy>=1.24.0
+scipy>=1.10.0
+scikit-image>=0.20.0
+PyWavelets>=1.4.0            # ai/postprocessing/denoiser.py wavelet denoise
+
+# ── Face detection / restoration ─────────────────────────────────────────────
+# basicsr and gfpgan import torchvision.transforms.functional_tensor, removed in
+# modern torchvision. face_detector.py / face_restorer.py install a sys.modules
+# shim before importing them — keep that shim if you bump torchvision.
+basicsr==1.4.2
+facexlib>=0.3.0
+gfpgan>=1.3.8
+
+# ── Model hosting / config ───────────────────────────────────────────────────
+huggingface_hub>=0.14.0
+pyyaml>=6.0
+
+# ── Optional ─────────────────────────────────────────────────────────────────
+# zeroscratches powers ScratchRestorer, which the pipeline deliberately bypasses
+# (the classical cascade replaces it). Startup no longer loads it unless
+# PIXREVIVE_LOAD_SCRATCH_RESTORER=1 is set.
+zeroscratches>=1.0.2
+
+# ── DDColor colorizer ─────────────────────────────────────────────────────────
+# timm provides the ConvNeXt encoder backbone used by DDColor.
+timm>=0.9.0
+# The DDColor Python package is installed from GitHub (not PyPI) via:
+#   python backend/ai/install_ddcolor.py
+# Run that script once before starting the backend for the first time.
+# h5py is imported only by the admin training benchmark, which is disabled in
+# this build. Install it if you re-enable async_run_training_pipeline.
+# h5py>=3.10.0

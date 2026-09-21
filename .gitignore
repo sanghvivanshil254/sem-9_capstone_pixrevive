@@ -1,0 +1,25 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# --- Node / Playwright ---
+node_modules/
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/playwright/.auth/
+
+# --- Pipeline run artifacts (never commit; regenerated per run) ---
+debug_output/
+backend/debug_output/
+test_artifacts/
+backend/temp_results/
+
+# --- Training data (large, local-only) ---
+backend/training_data/bw/
+backend/training_data/color/
+
+# --- Model weights (re-downloadable: backend/ai/download_weights.py + install_ddcolor.py) ---
+backend/ai/weights/

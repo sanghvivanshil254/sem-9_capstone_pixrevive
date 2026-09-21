@@ -1,0 +1,4 @@
+interface:
+  display_name: "PixRevive Debugger"
+  short_description: "Debug PixRevive restoration quality failures"
+  default_prompt: "Use $pixrevive-restoration-debugger to trace a PixRevive image restoration artifact from input through masks, colorization, face restoration, and upscaling."

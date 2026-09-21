@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la \"C:/Users/sangh/.gemini/antigravity-ide/brain/7f487ad0-39ba-431f-8cb0-630cdf3408b0/.user_uploaded\" 2>&1 | head -40; echo \"=== other upload dirs ===\"; ls -d \"C:/Users/sangh/.gemini/antigravity-ide/brain/\"*/ 2>/dev/null | head)"
+    ]
+  }
+}

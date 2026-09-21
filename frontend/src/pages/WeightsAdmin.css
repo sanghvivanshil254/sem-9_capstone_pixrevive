@@ -1,0 +1,119 @@
+.admin-page-container {
+    background-color: #faf9f6;
+    min-height: 100vh;
+    color: #292524;
+    font-family: 'Inter', sans-serif;
+}
+
+.cream-card {
+    background: #ffffff;
+    border: 1px solid #e7e5e4;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+    border-radius: 1rem;
+    transition: box-shadow 0.2s ease-in-out, border-color 0.2s;
+}
+
+.cream-card:hover {
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -2px rgba(0, 0, 0, 0.025);
+    border-color: #d6d3d1;
+}
+
+.guide-box {
+    background: linear-gradient(135deg, #fdfbf7 0%, #faf9f6 100%);
+    border: 1px solid #d6d3d1;
+    border-radius: 1rem;
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.01);
+}
+
+.guide-inner-box {
+    background: #ffffff;
+    border: 1px solid #e7e5e4;
+    border-radius: 0.75rem;
+    transition: border-color 0.2s;
+}
+
+.guide-inner-box:hover {
+    border-color: #a8a29e;
+}
+
+.drop-zone {
+    background: #faf9f6;
+    border: 2px dashed #d6d3d1;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    border-radius: 1rem;
+}
+
+.drop-zone:hover {
+    border-color: #78716c;
+    background: #f5f5f4;
+    transform: translateY(-2px);
+}
+
+.drop-zone.uploading {
+    border-color: #6366f1;
+    background: #eef2ff;
+    animation: pulse-glow-light 2s infinite;
+}
+
+.drop-zone.success {
+    border-color: #10b981;
+    background: #ecfdf5;
+}
+
+.drop-zone.error {
+    border-color: #ef4444;
+    background: #fef2f2;
+}
+
+@keyframes pulse-glow-light {
+    0%, 100% { box-shadow: 0 0 0px rgba(99, 102, 241, 0); }
+    50% { box-shadow: 0 0 15px rgba(99, 102, 241, 0.2); }
+}
+
+.dev-badge {
+    background: #f5f5f4;
+    border: 1px solid #e7e5e4;
+    color: #57534e;
+}
+
+.architecture-details {
+    background: #faf9f6;
+    border: 1px solid #e7e5e4;
+    border-radius: 0.5rem;
+}
+
+.pair-card {
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.pair-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 12px -3px rgba(0, 0, 0, 0.04), 0 4px 6px -2px rgba(0, 0, 0, 0.02);
+    border-color: #d6d3d1;
+}
+
+.pair-card img {
+    transition: transform 0.5s ease;
+}
+
+.pair-card .group:hover img {
+    transform: scale(1.05);
+}
+
+.training-terminal {
+    background-color: #1c1917;
+    border: 1px solid #292524;
+    border-radius: 0.75rem;
+    font-family: 'Courier New', Courier, monospace;
+    box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.8);
+}
+
+.training-terminal-line {
+    animation: fade-in-line 0.2s ease-out forwards;
+}
+
+@keyframes fade-in-line {
+    from { opacity: 0; transform: translateX(-4px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
