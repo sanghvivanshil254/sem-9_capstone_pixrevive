@@ -1,0 +1,290 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.1.1, pluggy-1.6.0 -- C:\Program Files\Python312\python.exe
+cachedir: .pytest_cache
+rootdir: D:\Desktop\kapstone\kapstone\PixRevive
+plugins: anyio-4.14.2
+collecting ... collected 114 items
+
+tests/test_admin_router.py::TestAdminRouter::test_admin_token_enforcement PASSED [  0%]
+tests/test_admin_router.py::TestAdminRouter::test_upload_invalid_weights_extension PASSED [  1%]
+tests/test_admin_router.py::TestAdminRouter::test_weights_status_endpoint PASSED [  2%]
+tests/test_admin_router.py::TestAdminRouter::test_zip_slip_traversal_rejected PASSED [  3%]
+tests/test_color_refiner.py::test_skin_tone_protection_corrects_green_cast PASSED [  4%]
+tests/test_color_refiner.py::test_skin_tone_protection_preserves_eyes_and_mouth PASSED [  5%]
+tests/test_color_refiner.py::test_multi_face_protection PASSED           [  6%]
+tests/test_color_refiner.py::test_edge_cases_and_graceful_fallbacks PASSED [  7%]
+tests/test_compat.py::TestCompat::test_functional_tensor_alias_installed PASSED [  7%]
+tests/test_facial_landmarks.py::TestLandmarkProportions::test_chin_point_position PASSED [  8%]
+tests/test_facial_landmarks.py::TestLandmarkProportions::test_eye_shape_ratio_calculation PASSED [  9%]
+tests/test_facial_landmarks.py::TestLandmarkProportions::test_eye_spacing_calculation PASSED [ 10%]
+tests/test_facial_landmarks.py::TestLandmarkProportions::test_mouth_center_position PASSED [ 11%]
+tests/test_facial_landmarks.py::TestLandmarkProportions::test_nose_tip_position PASSED [ 12%]
+tests/test_facial_landmarks.py::TestLandmarkComparison::test_eye_spacing_delta PASSED [ 13%]
+tests/test_facial_landmarks.py::TestLandmarkComparison::test_identical_landmarks_have_zero_delta PASSED [ 14%]
+tests/test_facial_landmarks.py::TestLandmarkStabilityThresholds::test_eye_shape_exceeds_threshold PASSED [ 14%]
+tests/test_facial_landmarks.py::TestLandmarkStabilityThresholds::test_eye_shape_within_threshold PASSED [ 15%]
+tests/test_facial_landmarks.py::TestLandmarkStabilityThresholds::test_eye_spacing_exceeds_threshold PASSED [ 16%]
+tests/test_facial_landmarks.py::TestLandmarkStabilityThresholds::test_eye_spacing_within_threshold PASSED [ 17%]
+tests/test_facial_landmarks.py::TestLandmarkStabilityThresholds::test_multiple_failures PASSED [ 18%]
+tests/test_facial_landmarks.py::TestLandmarkStabilityThresholds::test_position_deltas_normalized PASSED [ 19%]
+tests/test_facial_landmarks.py::TestFacialGeometryValidation::test_eye_shape_preservation PASSED [ 20%]
+tests/test_facial_landmarks.py::TestFacialGeometryValidation::test_eye_spacing_preservation PASSED [ 21%]
+tests/test_forensic_restoration.py::TestForensicValidatorUnit::test_constraint_1_flat_planar_geometry_passes_on_valid_scale PASSED [ 21%]
+tests/test_forensic_restoration.py::TestForensicValidatorUnit::test_constraint_1_rejects_aspect_warp_or_white_mockup_border PASSED [ 22%]
+tests/test_forensic_restoration.py::TestForensicValidatorUnit::test_constraint_2_facial_topology_rejects_blown_specular_burnout PASSED [ 23%]
+tests/test_forensic_restoration.py::TestForensicValidatorUnit::test_constraint_3_structural_continuity_passes_on_wavy_hair PASSED [ 24%]
+tests/test_forensic_restoration.py::TestForensicValidatorUnit::test_constraint_4_rejects_global_pink_mauve_wash PASSED [ 25%]
+tests/test_forensic_restoration.py::TestForensicValidatorUnit::test_constraint_6_straight_edges_validates_vertical_post PASSED [ 26%]
+tests/test_forensic_restoration.py::TestEndToEndForensicRestoration::test_case1_noisy_lena_satisfies_all_six_hard_constraints PASSED [ 27%]
+tests/test_identity_preservation.py::TestLandmarkPoint::test_distance_calculation PASSED [ 28%]
+tests/test_identity_preservation.py::TestLandmarkPoint::test_distance_to_self PASSED [ 28%]
+tests/test_identity_preservation.py::TestFacialLandmarks::test_eye_centers_exist PASSED [ 29%]
+tests/test_identity_preservation.py::TestFacialLandmarks::test_eye_shape_ratio PASSED [ 30%]
+tests/test_identity_preservation.py::TestFacialLandmarks::test_eye_spacing PASSED [ 31%]
+tests/test_identity_preservation.py::TestIdentityMetrics::test_default_values PASSED [ 32%]
+tests/test_identity_preservation.py::TestIdentityMetrics::test_to_dict PASSED [ 33%]
+tests/test_identity_preservation.py::TestIdentityValidator::test_comparison_of_identical_landmarks PASSED [ 34%]
+tests/test_identity_preservation.py::TestIdentityValidator::test_identical_images_pass_validation PASSED [ 35%]
+tests/test_identity_preservation.py::TestIdentityValidator::test_landmark_detection PASSED [ 35%]
+tests/test_identity_preservation.py::TestIdentityValidator::test_landmark_stability_validation PASSED [ 36%]
+tests/test_identity_preservation.py::TestIdentityValidator::test_pixel_preservation_with_damage_mask PASSED [ 37%]
+tests/test_identity_preservation.py::TestIdentityValidator::test_pixel_preservation_with_no_damage PASSED [ 38%]
+tests/test_identity_preservation.py::TestIdentityValidatorWithContext::test_validate_context_identical_images PASSED [ 39%]
+tests/test_identity_preservation.py::TestIdentityValidatorWithContext::test_validate_context_with_modified_image PASSED [ 40%]
+tests/test_identity_preservation.py::TestIdentityValidatorEdgeCases::test_custom_thresholds PASSED [ 41%]
+tests/test_identity_preservation.py::TestIdentityValidatorEdgeCases::test_empty_face_bbox PASSED [ 42%]
+tests/test_identity_preservation.py::TestIdentityValidatorEdgeCases::test_mismatched_image_shapes PASSED [ 42%]
+tests/test_identity_preservation.py::TestIdentityValidatorIntegration::test_full_validation_pipeline PASSED [ 43%]
+tests/test_identity_preservation.py::TestDamageAwareFaceRestorer::test_damage_aware_blend_preserves_clean_face PASSED [ 44%]
+tests/test_image_router.py::TestImageRouter::test_health_endpoint PASSED [ 45%]
+tests/test_image_router.py::TestImageRouter::test_status_nonexistent_task PASSED [ 46%]
+tests/test_image_router.py::TestImageRouter::test_task_pruning_lifecycle PASSED [ 47%]
+tests/test_image_router.py::TestImageRouter::test_upload_file_too_large PASSED [ 48%]
+tests/test_image_router.py::TestImageRouter::test_upload_invalid_mime_type PASSED [ 49%]
+tests/test_image_router.py::TestImageRouter::test_upload_valid_png PASSED [ 50%]
+tests/test_margin_robust_noise.py::TestContentRegion::test_framed_figure_mask_excludes_margin PASSED [ 50%]
+tests/test_margin_robust_noise.py::TestContentRegion::test_plain_photo_gets_full_mask PASSED [ 51%]
+tests/test_margin_robust_noise.py::TestContentRegion::test_robust_sigma_sees_through_margin FAILED [ 52%]
+tests/test_margin_robust_noise.py::TestContentRegion::test_robust_sigma_zero_on_clean PASSED [ 53%]
+tests/test_margin_robust_noise.py::TestMarginRobustAnalysis::test_additive_noise_image_stays_on_denoise_semantics FAILED [ 54%]
+tests/test_margin_robust_noise.py::TestMarginRobustAnalysis::test_case8_grain_field_flagged FAILED [ 55%]
+tests/test_margin_robust_noise.py::TestMarginRobustAnalysis::test_case8_no_bogus_compression_flags FAILED [ 56%]
+tests/test_margin_robust_noise.py::TestMarginRobustAnalysis::test_case8_noise_score_is_not_diluted FAILED [ 57%]
+tests/test_margin_robust_noise.py::TestGrainFieldGate::test_gate_keeps_real_3d_tears PASSED [ 57%]
+tests/test_margin_robust_noise.py::TestGrainFieldGate::test_speckle_image_gets_tiny_mask_not_5pct FAILED [ 58%]
+tests/test_orchestrator_phase1.py::TestOrchestratorPhase1::test_canvas_transaction_auto_rollback_on_exception PASSED [ 59%]
+tests/test_orchestrator_phase1.py::TestOrchestratorPhase1::test_canvas_transaction_commit PASSED [ 60%]
+tests/test_orchestrator_phase1.py::TestOrchestratorPhase1::test_canvas_transaction_rollback_reverts_pixels_exactly PASSED [ 61%]
+tests/test_orchestrator_phase1.py::TestOrchestratorPhase1::test_loop_controller_budget_and_oscillation PASSED [ 62%]
+tests/test_orchestrator_phase1.py::TestOrchestratorPhase1::test_loop_controller_monotonic_progress PASSED [ 63%]
+tests/test_orchestrator_phase1.py::TestOrchestratorPhase1::test_manifest_logging_and_authenticity PASSED [ 64%]
+tests/test_orchestrator_phase2.py::TestOrchestratorPhase2::test_corroborator_accepts_sharp_emulsion_flake PASSED [ 64%]
+tests/test_orchestrator_phase2.py::TestOrchestratorPhase2::test_corroborator_crack_geometry PASSED [ 65%]
+tests/test_orchestrator_phase2.py::TestOrchestratorPhase2::test_corroborator_rejects_smooth_specular_highlight PASSED [ 66%]
+tests/test_orchestrator_phase2.py::TestOrchestratorPhase2::test_defect_proposer_classifies_monochrome_and_resolution PASSED [ 67%]
+tests/test_orchestrator_phase2.py::TestOrchestratorPhase2::test_feature_bank_global_features PASSED [ 68%]
+tests/test_orchestrator_phase2.py::TestOrchestratorPhase2::test_feature_bank_periodic_moire_detection PASSED [ 69%]
+tests/test_orchestrator_phase3.py::TestOrchestratorPhase3::test_action_registry_mappings PASSED [ 70%]
+tests/test_orchestrator_phase3.py::TestOrchestratorPhase3::test_deskew_crop_action PASSED [ 71%]
+tests/test_orchestrator_phase3.py::TestOrchestratorPhase3::test_detail_synthesizer_increases_hf_energy PASSED [ 71%]
+tests/test_orchestrator_phase3.py::TestOrchestratorPhase3::test_nlm_denoise_action PASSED [ 72%]
+tests/test_orchestrator_phase4.py::TestOrchestratorPhase4::test_orchestrator_handles_rollback_gracefully PASSED [ 73%]
+tests/test_orchestrator_phase4.py::TestOrchestratorPhase4::test_orchestrator_manifest_generation PASSED [ 74%]
+tests/test_orchestrator_phase4.py::TestOrchestratorPhase4::test_orchestrator_monotonic_progress_emission PASSED [ 75%]
+tests/test_orchestrator_phase4.py::TestOrchestratorPhase4::test_restoration_pipeline_delegates_to_orchestrator PASSED [ 76%]
+tests/test_progress_stream.py::TestProgressStream::test_process_stream_error_propagation PASSED [ 77%]
+tests/test_progress_stream.py::TestProgressStream::test_process_stream_invalid_mime PASSED [ 78%]
+tests/test_progress_stream.py::TestProgressStream::test_process_stream_monotonic_events PASSED [ 78%]
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_color_smoother_handles_lab_l_channel_range PASSED [ 79%]
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_ddcolor_skips_tiny_sources PASSED [ 80%]
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_deferred_face_restoration_logic_on_small_canvas PASSED [ 81%]
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_explicit_colorization_runs_for_bw_route PASSED [ 82%]
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_face_restorer_adaptive_prior_weight PASSED [ 83%]
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_grayscale_portrait_routes_to_denoise_without_auto_colorization PASSED [ 84%]
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_identity_validator_normalizes_restored_output_size PASSED [ 85%]
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_low_saturation_channel_jitter_stays_grayscale PASSED [ 85%]
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_multiscale_fill_keeps_channel_dimension_for_weights PASSED [ 86%]
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_noise_adaptive_stage_5_denoising PASSED [ 87%]
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_noise_classifier_detects_chroma_noise PASSED [ 88%]
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_noise_classifier_detects_impulse_noise PASSED [ 89%]
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_noise_classifier_detects_periodic_striping PASSED [ 90%]
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_noise_router_declares_all_requested_noise_types PASSED [ 91%]
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_noise_router_reduces_impulse_without_shape_change PASSED [ 92%]
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_noisy_grayscale_is_not_major_structural_damage PASSED [ 92%]
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_noisy_lowres_portrait_face_damage_guard PASSED [ 93%]
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_opencv_runtime_has_required_apis PASSED [ 94%]
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_pipeline_process_method_returns_png_bytes PASSED [ 95%]
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_smart_denoiser_rolls_back_over_smoothed_candidate PASSED [ 96%]
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_speck_suppressor_bypasses_gaussian_noise PASSED [ 97%]
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_speck_suppressor_bypasses_landscape_edges PASSED [ 98%]
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_speck_suppressor_triggers_on_flaked_portrait PASSED [ 99%]
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_tiny_source_sr_target_stays_at_model_scale PASSED [100%]
+
+================================== FAILURES ===================================
+___________ TestContentRegion.test_robust_sigma_sees_through_margin ___________
+
+self = <tests.test_margin_robust_noise.TestContentRegion testMethod=test_robust_sigma_sees_through_margin>
+
+    def test_robust_sigma_sees_through_margin(self):
+        """Zero-grain margin + grainy content: sigma must reflect the content."""
+        rng = np.random.default_rng(7)
+        img = np.full((160, 120), 255, dtype=np.uint8)
+        img[10:150, 10:110] = np.clip(
+            128 + rng.normal(0, 14, (140, 100)), 0, 255
+        ).astype(np.uint8)
+        sigma = robust_sigma(img)
+        self.assertGreater(sigma, 8.0, "content grain must dominate the estimate")
+        global_mad = 1.4826 * float(
+            np.median(np.abs(img.astype(np.float32) - cv2.medianBlur(img, 3).astype(np.float32)))
+        )
+>       self.assertLess(global_mad, 2.0, "global MAD collapses to the margin (control)")
+E       AssertionError: 5.9304 not less than 2.0 : global MAD collapses to the margin (control)
+
+tests\test_margin_robust_noise.py:58: AssertionError
+_ TestMarginRobustAnalysis.test_additive_noise_image_stays_on_denoise_semantics _
+
+self = <tests.test_margin_robust_noise.TestMarginRobustAnalysis testMethod=test_additive_noise_image_stays_on_denoise_semantics>
+
+    def test_additive_noise_image_stays_on_denoise_semantics(self):
+        """case1_noisy_lena (no margins) must keep its established profile."""
+        path = os.path.join(os.path.dirname(__file__), "restoration_dataset", "damaged", "case1_noisy_lena.jpg")
+        bgr = cv2.imread(path)
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        meta = QualityAnalyzer.analyze(rgb)
+        self.assertGreater(meta["noise_score"], 10.0)
+>       self.assertFalse(meta["grain_field"], "case1 damage% >= 6 -> not a pure grain field")
+E       AssertionError: True is not false : case1 damage% >= 6 -> not a pure grain field
+
+tests\test_margin_robust_noise.py:98: AssertionError
+___________ TestMarginRobustAnalysis.test_case8_grain_field_flagged ___________
+
+self = <tests.test_margin_robust_noise.TestMarginRobustAnalysis testMethod=test_case8_grain_field_flagged>
+
+    def test_case8_grain_field_flagged(self):
+        meta = QualityAnalyzer.analyze(self.rgb)
+>       self.assertTrue(meta["grain_field"], f"metadata: {meta}")
+E       AssertionError: False is not true : metadata: {'content_sigma': 1.4826, 'grain_field': False, 'grain_field_confidence': 0.074, 'width': 561, 'height': 420, 'blur_score': np.float64(589.8952380952381), 'blur_score_norm': 1.0, 'noise_score': 3.759469509124756, 'contrast_score': 82.0099105834961, 'is_grayscale': True, 'is_sepia': False, 'color_type': 'grayscale', 'mean_saturation': 0.0, 'warm_ratio': 0.0, 'damage_percentage': 2.9976232917409384, 'scratch_line_pct': 0.19862490450725745, 'sepia_flake_percentage': 0.0, 'has_white_flakes': True, 'has_scratches': False, 'damage_confidence': 'structural'}
+
+tests\test_margin_robust_noise.py:83: AssertionError
+_______ TestMarginRobustAnalysis.test_case8_no_bogus_compression_flags ________
+
+self = <tests.test_margin_robust_noise.TestMarginRobustAnalysis testMethod=test_case8_no_bogus_compression_flags>
+
+    def test_case8_no_bogus_compression_flags(self):
+        """Content/margin boundary must no longer read as JPEG blocking."""
+        profile = NoiseClassifier.classify(self.rgb, {"color_type": "grayscale"})
+>       self.assertNotIn("jpeg_compression", profile.detected_types)
+E       AssertionError: 'jpeg_compression' unexpectedly found in ['jpeg_compression', 'blocking', 'ringing']
+
+tests\test_margin_robust_noise.py:88: AssertionError
+_______ TestMarginRobustAnalysis.test_case8_noise_score_is_not_diluted ________
+
+self = <tests.test_margin_robust_noise.TestMarginRobustAnalysis testMethod=test_case8_noise_score_is_not_diluted>
+
+    def test_case8_noise_score_is_not_diluted(self):
+        """The margin previously halved noise_score; content-only must fix it."""
+        meta = QualityAnalyzer.analyze(self.rgb)
+        # Global (old) estimator reported 3.08 on this image; heavy visible
+        # speckle in the content must push the content-aware score far higher.
+>       self.assertGreater(meta["noise_score"], 6.0)
+E       AssertionError: 3.759469509124756 not greater than 6.0
+
+tests\test_margin_robust_noise.py:78: AssertionError
+________ TestGrainFieldGate.test_speckle_image_gets_tiny_mask_not_5pct ________
+
+self = <tests.test_margin_robust_noise.TestGrainFieldGate testMethod=test_speckle_image_gets_tiny_mask_not_5pct>
+
+    def test_speckle_image_gets_tiny_mask_not_5pct(self):
+        """End-to-end Stage 1 + Stage 2: false flakes/cracks must be discarded."""
+        pipeline = RestorationPipeline()
+        ctx = PipelineContext(self.rgb.copy())
+        pipeline._stage_1_analyze(ctx, None)
+    
+        # Simulate the real pipeline sequence: face detect runs before Stage 2.
+        try:
+            pipeline._stage_4_face_detect(ctx, None)
+        except Exception:
+            ctx.image_metadata["faces"] = []
+    
+        mask = pipeline._stage_2_fracture_masking(ctx, None)
+        coverage = 100.0 * np.count_nonzero(mask) / mask.size
+>       self.assertLess(
+            coverage,
+            2.0,
+            f"grain-field image must not produce a large inpaint mask (got {coverage:.2f}%)",
+        )
+E       AssertionError: 8.656735421441304 not less than 2.0 : grain-field image must not produce a large inpaint mask (got 8.66%)
+
+tests\test_margin_robust_noise.py:123: AssertionError
+---------------------------- Captured stdout call -----------------------------
+[OK] LaMa loaded on cuda.
+============================== warnings summary ===============================
+C:\Users\sangh\AppData\Roaming\Python\Python312\site-packages\fastapi\testclient.py:1
+  C:\Users\sangh\AppData\Roaming\Python\Python312\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+C:\Users\sangh\AppData\Roaming\Python\Python312\site-packages\basicsr\metrics\niqe.py:5
+  C:\Users\sangh\AppData\Roaming\Python\Python312\site-packages\basicsr\metrics\niqe.py:5: DeprecationWarning: Please import `convolve` from the `scipy.ndimage` namespace; the `scipy.ndimage.filters` namespace is deprecated and will be removed in SciPy 2.0.0.
+    from scipy.ndimage.filters import convolve
+
+C:\Users\sangh\AppData\Roaming\Python\Python312\site-packages\torchvision\models\_utils.py:207: 1 warning
+tests/test_forensic_restoration.py: 1 warning
+tests/test_margin_robust_noise.py: 1 warning
+tests/test_orchestrator_phase4.py: 3 warnings
+tests/test_restoration_regressions.py: 4 warnings
+  C:\Users\sangh\AppData\Roaming\Python\Python312\site-packages\torchvision\models\_utils.py:207: UserWarning: The parameter 'pretrained' is deprecated since 0.13 and may be removed in the future, please use 'weights' instead.
+    warnings.warn(
+
+C:\Users\sangh\AppData\Roaming\Python\Python312\site-packages\torchvision\models\_utils.py:222: 1 warning
+tests/test_forensic_restoration.py: 1 warning
+tests/test_margin_robust_noise.py: 1 warning
+tests/test_orchestrator_phase4.py: 3 warnings
+tests/test_restoration_regressions.py: 4 warnings
+  C:\Users\sangh\AppData\Roaming\Python\Python312\site-packages\torchvision\models\_utils.py:222: UserWarning: Arguments other than a weight enum or `None` for 'weights' are deprecated since 0.13 and may be removed in the future. The current behavior is equivalent to passing `weights=None`.
+    warnings.warn(msg)
+
+C:\Users\sangh\AppData\Roaming\Python\Python312\site-packages\torch\jit\_serialization.py:176
+tests/test_forensic_restoration.py::TestEndToEndForensicRestoration::test_case1_noisy_lena_satisfies_all_six_hard_constraints
+tests/test_margin_robust_noise.py::TestGrainFieldGate::test_speckle_image_gets_tiny_mask_not_5pct
+tests/test_orchestrator_phase4.py::TestOrchestratorPhase4::test_restoration_pipeline_delegates_to_orchestrator
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_deferred_face_restoration_logic_on_small_canvas
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_noise_adaptive_stage_5_denoising
+tests/test_restoration_regressions.py::TestRestorationRegressions::test_pipeline_process_method_returns_png_bytes
+  C:\Users\sangh\AppData\Roaming\Python\Python312\site-packages\torch\jit\_serialization.py:176: DeprecationWarning: `torch.jit.load` is deprecated. Please switch to `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+============================ slowest 25 durations =============================
+33.60s setup    tests/test_forensic_restoration.py::TestEndToEndForensicRestoration::test_case1_noisy_lena_satisfies_all_six_hard_constraints
+26.84s call     tests/test_forensic_restoration.py::TestEndToEndForensicRestoration::test_case1_noisy_lena_satisfies_all_six_hard_constraints
+25.35s call     tests/test_restoration_regressions.py::TestRestorationRegressions::test_pipeline_process_method_returns_png_bytes
+24.30s call     tests/test_restoration_regressions.py::TestRestorationRegressions::test_noisy_lowres_portrait_face_damage_guard
+22.40s call     tests/test_restoration_regressions.py::TestRestorationRegressions::test_noise_adaptive_stage_5_denoising
+12.99s call     tests/test_margin_robust_noise.py::TestGrainFieldGate::test_speckle_image_gets_tiny_mask_not_5pct
+12.26s call     tests/test_orchestrator_phase4.py::TestOrchestratorPhase4::test_orchestrator_manifest_generation
+7.59s call     tests/test_restoration_regressions.py::TestRestorationRegressions::test_deferred_face_restoration_logic_on_small_canvas
+6.43s call     tests/test_orchestrator_phase4.py::TestOrchestratorPhase4::test_orchestrator_handles_rollback_gracefully
+5.91s call     tests/test_orchestrator_phase4.py::TestOrchestratorPhase4::test_restoration_pipeline_delegates_to_orchestrator
+4.37s call     tests/test_orchestrator_phase2.py::TestOrchestratorPhase2::test_defect_proposer_classifies_monochrome_and_resolution
+2.27s call     tests/test_orchestrator_phase4.py::TestOrchestratorPhase4::test_orchestrator_monotonic_progress_emission
+1.82s call     tests/test_restoration_regressions.py::TestRestorationRegressions::test_noise_router_reduces_impulse_without_shape_change
+1.31s call     tests/test_restoration_regressions.py::TestRestorationRegressions::test_noise_classifier_detects_periodic_striping
+0.96s teardown tests/test_restoration_regressions.py::TestRestorationRegressions::test_noise_adaptive_stage_5_denoising
+0.91s teardown tests/test_restoration_regressions.py::TestRestorationRegressions::test_pipeline_process_method_returns_png_bytes
+0.67s call     tests/test_color_refiner.py::test_skin_tone_protection_corrects_green_cast
+0.47s call     tests/test_identity_preservation.py::TestIdentityValidator::test_identical_images_pass_validation
+0.40s call     tests/test_restoration_regressions.py::TestRestorationRegressions::test_noisy_grayscale_is_not_major_structural_damage
+0.22s teardown tests/test_orchestrator_phase4.py::TestOrchestratorPhase4::test_orchestrator_manifest_generation
+0.18s call     tests/test_restoration_regressions.py::TestRestorationRegressions::test_noise_classifier_detects_chroma_noise
+0.18s call     tests/test_image_router.py::TestImageRouter::test_upload_file_too_large
+0.15s call     tests/test_orchestrator_phase2.py::TestOrchestratorPhase2::test_feature_bank_periodic_moire_detection
+0.12s call     tests/test_orchestrator_phase3.py::TestOrchestratorPhase3::test_nlm_denoise_action
+0.11s call     tests/test_progress_stream.py::TestProgressStream::test_process_stream_error_propagation
+=========================== short test summary info ===========================
+FAILED tests/test_margin_robust_noise.py::TestContentRegion::test_robust_sigma_sees_through_margin
+FAILED tests/test_margin_robust_noise.py::TestMarginRobustAnalysis::test_additive_noise_image_stays_on_denoise_semantics
+FAILED tests/test_margin_robust_noise.py::TestMarginRobustAnalysis::test_case8_grain_field_flagged
+FAILED tests/test_margin_robust_noise.py::TestMarginRobustAnalysis::test_case8_no_bogus_compression_flags
+FAILED tests/test_margin_robust_noise.py::TestMarginRobustAnalysis::test_case8_noise_score_is_not_diluted
+FAILED tests/test_margin_robust_noise.py::TestGrainFieldGate::test_speckle_image_gets_tiny_mask_not_5pct
+=========== 6 failed, 108 passed, 29 warnings in 207.45s (0:03:27) ============
