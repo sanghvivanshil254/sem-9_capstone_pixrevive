@@ -53,18 +53,19 @@ flowchart TD
 ```
 PixRevive/
 ├── backend/
-│   ├── main.py                               # FastAPI application entry point & CORS
+│   ├── main.py                               # FastAPI app: CORS allowlist, static training_data mount, /health (delegates to pipeline.health_status())
 │   ├── routers/
-│   │   ├── restoration.py                    # Endpoints: /api/restore, /api/process, /api/process-stream, /api/health
-│   │   ├── comparison.py                     # Side-by-side / slider comparison data
-│   │   └── history.py                        # Processed image history & cache
+│   │   ├── image_router.py                   # /api/upload, /api/process, /api/process-stream (SSE), /api/process/{id}/result|status
+│   │   └── admin_router.py                   # /api/admin/* weights & training-data CRUD; /training/start|status are honest 501 stubs
 │   │
 │   ├── ai/
 │   │   ├── pipeline/
 │   │   │   ├── restoration_pipeline.py       # Full 14-stage restoration orchestrator (restore & process methods)
+│   │   │   │                                 #   Stage 2 also wires foxing/mold dark spots (T-1) into the damage mask
 │   │   │   ├── pipeline_context.py           # State container: working_image, damage_masks, metadata, timers
-│   │   │   ├── pipeline_router.py            # Routing decisions based on image analysis
-│   │   │   └── debug_logger.py               # Debug stage snapshots saved to debug_output/
+│   │   │   ├── pipeline_router.py            # Routing decisions based on image analysis (6 named routes + SAFE_FALLBACK)
+│   │   │   ├── debug_logger.py               # Debug stage snapshots saved to debug_output/
+│   │   │   └── (stage registry planned for Phase 3 — A-2)
 │   │   │
 │   │   ├── preprocessing/
 │   │   │   ├── impulse_denoiser.py           # ROAD-test discrete salt-and-pepper / dust outlier filter
@@ -79,15 +80,18 @@ PixRevive/
 │   │   │   └── tearmark_detector.py          # 3-pass saturation-aware sepia/color emulsion flaking detector
 │   │   │
 │   │   ├── analysis/
-│   │   │   ├── quality_analyzer.py           # Sharpness, noise score, color_type (sepia/grayscale/color)
+│   │   │   ├── quality_analyzer.py           # Sharpness, noise score, color_type (sepia/grayscale/color), content_region (margin-robust sigma)
 │   │   │   ├── face_detector.py              # RetinaFace + Haar cascade multi-face & 5-landmark detector
-│   │   │   └── color_analyzer.py             # Chrominance distribution & saturation analysis
+│   │   │   ├── content_region.py             # Content-vs-margin mask + robust sigma (case8 margin fix)
+│   │   │   └── quality_service.py            # Quality analysis service layer
 │   │   │
 │   │   ├── restoration/
 │   │   │   ├── face_restorer.py              # GFPGAN v1.4, multi-face damage-aware composite, fidelity=0.85
 │   │   │   ├── super_resolution.py           # RealESRGAN x4, 2K normalizer, tiled inference, LAB post-sharpening
 │   │   │   ├── inpainting_engine.py          # LaMa orchestrator + OpenCV Telea fallback
-│   │   │   └── lama_inpaint.py               # Deep LaMa (TorchScript big-lama.pt)
+│   │   │   ├── lama_restorer.py              # Deep LaMa loader (TorchScript big-lama.pt)
+│   │   │   ├── rrdbnet.py                    # RRDBNet architecture for Real-ESRGAN weights
+│   │   │   └── super_resolution.py           # RealESRGAN x4, 2K normalizer, tiled inference (SuperResolution)
 │   │   │
 │   │   ├── colorization/
 │   │   │   ├── ddcolor_colorizer.py          # DDColor ICCV 2023 global wrapper (512px input) + chroma blending
@@ -96,13 +100,28 @@ PixRevive/
 │   │   │
 │   │   ├── postprocessing/
 │   │   │   ├── denoiser.py                   # AdaptiveDenoiser, WaveletDenoiser, SmartDenoiser, ArtifactDetector
-│   │   │   ├── enhancer.py                   # Enhancer (adaptive USM, gentle CLAHE, color cast correction, micro-texture)
-│   │   │   ├── noise_router.py               # Noise type classifier & multi-filter dispatch
-│   │   │   └── film_grain.py                 # Subtle analog film grain synthesis
+│   │   │   ├── enhancer.py                   # Harmonizer — guided-filter seam blending along inpainting rims (Enhancer class deleted, D17)
+│   │   │   └── noise_router.py               # Noise type classifier (30 types) & multi-filter dispatch
 │   │   │
 │   │   ├── validation/
 │   │   │   ├── identity_validator.py         # SSIM & facial landmark distance verification
-│   │   │   └── damage_validator.py           # Residual defect checks & inpaint quality score
+│   │   │   └── forensic_validator.py         # Residual defect checks & inpaint quality score
+│   │   │
+│   │   ├── orchestrator/                     # Experimental action-based orchestrator (PIXREVIVE_USE_ORCHESTRATOR)
+│   │   │   ├── orchestrator.py               # PhotoOrchestrator: perception → plan → act loop
+│   │   │   ├── loop_controller.py            # Iteration control with convergence gates
+│   │   │   ├── perception/                   # Defect proposer, corroborator, feature bank, taxonomy
+│   │   │   ├── actions/                      # colorize/denoise/detail/face/geometry/inpaint/superres actions
+│   │   │   ├── synthesis_manifest.py         # Planned action manifest
+│   │   │   └── transaction.py                # Rollback-safe applied-action ledger
+│   │   │
+│   │   ├── download_weights.py               # Canonical checkpoint download manifest (GitHub/HF → backend/ai/weights/)
+│   │   └── install_ddcolor.py                # DDColor vendored-source installer
+│   │
+│   ├── services/
+│   │   └── image_service.py                  # Singleton pipeline façade: ImageService.process_image, task store
+│   │
+│   └── requirements.txt                      # Backend dependencies
 │   │   │
 │   │   └── weights/                          # ALL model checkpoints (.pth, .pt) live here
 │   │       ├── ddcolor/                      # ddcolor_modelscope.pth (~870 MB)
@@ -115,28 +134,44 @@ PixRevive/
 │
 ├── frontend/                                 # Vite + React UI
 │   └── src/
-│       ├── App.jsx                           # Main layout & upload dropzone
-│       └── components/
-│           ├── ComparisonSlider.jsx          # Interactive before/after split slider
-│           ├── ProgressBar.jsx               # Monotonic stage progress visualizer
-│           └── SettingsPanel.jsx             # Toggle flags (repair, denoise, colorize, face, sr)
+│       ├── App.jsx                           # Router + layout
+│       ├── components/
+│       │   ├── ImageUploader.jsx             # Upload dropzone
+│       │   ├── ProgressBar.jsx               # Monotonic stage progress visualizer (STAGES/EDGE_LABELS)
+│       │   ├── Navbar.jsx                    # Health pill: online / loading / degraded (per-model load_errors) / offline
+│       │   └── Footer.jsx
+│       └── pages/
+│           ├── Home.jsx                      # Restore page
+│           ├── Documentation.jsx
+│           └── WeightsAdmin.jsx              # Admin weights & training-data UI
 │
-├── tests/                                    # Automated pytest test suite
+├── tests/                                    # Automated pytest suite (108+ tests)
 │   ├── restoration_dataset/
-│   │   └── damaged/                          # Standard test fixtures: case1 to case6
-│   │       ├── case1_noisy_lena.jpg          # Gaussian noise on flat grayscale
-│   │       ├── case2_dead_tree_landscape.jpg # Landscape macro-edges
-│   │       ├── case3_sepia_flaked_portrait.jpg# Emulsion flaking on sepia portrait
-│   │       ├── case4_diagonal_tear_portrait.jpg# Diagonal paper fracture
-│   │       ├── case5_spiderweb_creases_portrait.jpg# Spiderweb facial cracks + open smile
-│   │       └── case6_severe_3d_torn_photo.png# Severe 3D paper tear & curl
+│   │   ├── damaged/                          # case1-case6 + adopted user benchmarks case8-case12:
+│   │   │   ├── case8_speckle_lena_margins.png# SigShrink speckle figure (grain-field routing)
+│   │   │   ├── case9_teared_sepia.jpg        # teared.jpg — heavy-regen path (~35% mask)
+│   │   │   ├── case10_spiderweb_lips.jpg     # image1.jpeg — spiderweb creases, mouth-adjacent damage
+│   │   │   ├── case11_minor_creases.jpg      # image3.jpg.jpeg — light creases
+│   │   │   └── case12_foxing_spots.png       # synthetic foxing/mold blemishes (T-1 regression)
+│   │   ├── clean/ and expected/              # Reference images
 │   ├── test_restoration_regressions.py       # Pipeline regressions, damage guards, low-res noise
+│   ├── test_damage_fixtures.py               # Foxing wiring (T-1) + per-case benchmark assertions
+│   ├── test_margin_robust_noise.py           # Margin-robust sigma + grain-field gate (case8)
 │   ├── test_identity_preservation.py         # Face identity & SSIM stability
 │   └── test_facial_landmarks.py              # Landmark detection accuracy
+│
+├── scripts/
+│   ├── check_progress_stream.py              # SSE audit: monotonic %, known stage ids, terminal complete
+│   └── diagnostics/                          # Salvaged benchmark_runner, full_dataset_sanity_sweep
+│
+├── e2e/                                      # Playwright specs (use CDP Chrome — Playwright download not permitted)
+├── docs/                                     # EXECUTION_PLAN, taxonomy mapping, baselines
+├── test_artifacts/                           # Local-only outputs & sample sources (git-ignored)
 │
 ├── .agents/                                  # Workspace agent rules & skills
 │   └── rules/
 │       ├── python_runtime.md                 # Enforced Python 3.12 path & venv prohibition
+│       ├── browser_cdp.md                    # CDP-attached Chrome for browser automation
 │       └── project_shorthands.md             # 'reload' and 'map' shortcuts
 │
 ├── CLAUDE.md                                 # Canonical agent rules
@@ -148,7 +183,7 @@ PixRevive/
 
 ## 3. Architecture Status: Semantic Segmentation & Multi-Face Colorization
 
-* **Semantic Segmentation**: **Currently Absent.** PixRevive does not possess a semantic material segmentation stage (e.g. clothing, skin, hair, background materials). Any material-aware colorization gating must be introduced as a new module.
+* **Semantic Segmentation**: The U-Net **DefectSegmenter** (`defect_detect/FT_Epoch_latest.pt`) performs *damage* segmentation (cracks/flakes/scratches) as the Stage 2 gatekeeper — but **material segmentation (clothing/skin/hair/background) is still absent**, so any material-aware colorization gating would be a new module.
 * **Multi-Face Handling**: `FaceDetector.detect()` identifies **all faces** with bounding boxes and 5 landmarks, which are leveraged in Stage 5 (3-zone NLM) and Stage 7 (GFPGAN). Stage 6 (DDColor) does not currently consume face landmarks, applying a global transformation.
 
 ---

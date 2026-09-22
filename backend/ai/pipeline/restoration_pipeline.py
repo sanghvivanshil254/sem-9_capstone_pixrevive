@@ -87,8 +87,13 @@ def _refresh_sharpness(context: PipelineContext) -> None:
 class RestorationPipeline:
     """Production Photo Restoration Pipeline with Projector Exhibition Grading & Diagnostic Instrumentation."""
 
-    def __init__(self) -> None:
-        self._device = "cuda" if torch.cuda.is_available() else "cpu"
+    def __init__(self, device: Optional[str] = None) -> None:
+        # Precedence: explicit argument > PIXREVIVE_DEVICE env var > auto pick.
+        # Tests force CPU (several full pipelines loading on one 4 GB GPU OOM
+        # nondeterministically); production leaves the env var unset.
+        env_device = os.getenv("PIXREVIVE_DEVICE", "").strip().lower()
+        chosen = device or env_device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self._device = chosen if chosen in ("cuda", "cpu") else "cpu"
 
         self.router = PipelineRouter()
         self.enhanced_detector = EnhancedDamageDetector()
@@ -100,6 +105,7 @@ class RestorationPipeline:
 
         self._colorizer_ready = threading.Event()
         self._models_ready = threading.Event()
+        self._model_load_failures: Dict[str, str] = {}
         self.inpainting_engine: Optional[InpaintingEngine] = None
         self._lama = None
         self._orchestrator: Optional[Any] = None
@@ -116,6 +122,11 @@ class RestorationPipeline:
 
     def initialise_models(self) -> None:
         """Load deep learning models asynchronously in background threads."""
+        def _record_failure(name: str, exc: Exception) -> None:
+            """Remember a loader failure so /api/health can report per-model truth."""
+            logger.warning("%s load failed: %s", name, exc)
+            self._model_load_failures[name] = str(exc)
+
         def _load_all_fast():
             try:
                 try:
@@ -123,18 +134,18 @@ class RestorationPipeline:
                     self._lama = LamaRestorer()
                     self._lama.load(self._device)
                 except Exception as exc:
-                    logger.warning("LaMa load failed: %s", exc)
+                    _record_failure("lama", exc)
                     self._lama = None
 
                 try:
                     self.face_restorer.load(self._device)
                 except Exception as exc:
-                    logger.warning("GFPGAN load failed: %s", exc)
+                    _record_failure("gfpgan", exc)
 
                 try:
                     self.super_resolution.load(self._device)
                 except Exception as exc:
-                    logger.warning("RealESRGAN load failed: %s", exc)
+                    _record_failure("realesrgan", exc)
 
                 self.inpainting_engine = InpaintingEngine(self._lama)
                 logger.info("[OK] Fast pipeline models loaded on %s.", self._device)
@@ -144,6 +155,8 @@ class RestorationPipeline:
         def _load_colorizer():
             try:
                 self.colorizer.load(self._device)
+            except Exception as exc:
+                _record_failure("ddcolor", exc)
             finally:
                 self._colorizer_ready.set()
 
@@ -156,7 +169,11 @@ class RestorationPipeline:
         return enable_colorization and (color_type in ("grayscale", "sepia"))
 
     def health_status(self) -> Dict[str, Any]:
-        """Check status of pipeline models."""
+        """Per-model load truth: a boolean per model plus each failed loader's error.
+
+        Consumers (main.py health endpoint, Navbar degraded-mode pill) must be
+        able to distinguish "all models loaded" from "degraded: which one".
+        """
         defect_ready = (
             getattr(self.enhanced_detector, "defect_segmenter", None) is not None
             and getattr(self.enhanced_detector.defect_segmenter, "is_loaded", False)
@@ -170,6 +187,7 @@ class RestorationPipeline:
                 "realesrgan": getattr(self.super_resolution, "realesrgan", None) is not None or self.super_resolution.is_loaded,
                 "ddcolor": self.colorizer.is_loaded,
             },
+            "load_errors": dict(self._model_load_failures),
             "device": self._device,
         }
 
@@ -298,6 +316,16 @@ class RestorationPipeline:
           saturation-aware flake detector and adds emulsion flakes that the
           U-Net threshold may have missed.
 
+        Strategy (Fix 3 — foxing / mold, T-1):
+          EnhancedDamageDetector.detect_dark_spots() (black-hat) contributes
+          small dark blemishes — foxing, mold speckles, ink dots — that every
+          other detector (tuned for *bright* flakes and cracks) ignores. It is
+          OR-ed in after the grain-field gate so noisy frames still route to
+          the denoise path, and dropped entirely when its coverage exceeds
+          FOXING_COVERAGE_CAP: shadows and dark backgrounds light up black-hat
+          across huge areas, so a large "spots" mask is a false positive by
+          size, not by content.
+
         Strategy (MaskRefiner):
           MaskRefiner fuses all sub-masks, strips photo border artefacts from
           the tearmark mask, splits into LaMa-tier and NS-tier, and protects
@@ -356,6 +384,34 @@ class RestorationPipeline:
                 "denoise path will handle the grain."
             )
             context.image_metadata["grain_field_mask_discarded"] = True
+
+        # ── Foxing / mold spots (T-1) ────────────────────────────────────
+        # Only on frames the grain gate did not claim; black-hat on a noisy
+        # scan mostly fires on grain. detect_dark_spots() itself is sized to
+        # reject shadows (component area <= 100 px, circularity >= 0.3,
+        # pixel < 60); the coverage cap below rejects whole-region shadows.
+        FOXING_COVERAGE_CAP = 2.0  # percent of frame
+        if not context.image_metadata.get("grain_field_mask_discarded", False):
+            try:
+                dark_spots = self.enhanced_detector.detect_dark_spots(
+                    context.working_image, context
+                )
+                spots_pct = float(np.sum(dark_spots > 0) / max(dark_spots.size, 1) * 100)
+                if spots_pct > FOXING_COVERAGE_CAP:
+                    context.add_log(
+                        f"Stage 2 Foxing gate: dark-spot coverage {spots_pct:.2f}% "
+                        f"> {FOXING_COVERAGE_CAP:.1f}% cap — shadow/dark-texture "
+                        "false positive, mask discarded."
+                    )
+                elif np.any(dark_spots):
+                    combined = cv2.bitwise_or(combined, dark_spots)
+                    context.damage_masks["dark_spots"] = dark_spots
+                    context.add_log(
+                        f"Stage 2 Foxing: {spots_pct:.2f}% dark-spot coverage "
+                        "added to damage mask."
+                    )
+            except Exception as exc:
+                context.add_log(f"Stage 2 Foxing detection failed: {exc}")
 
         # ── TearmarkDetector for sepia/color emulsion flakes ─────────
         color_type = context.image_metadata.get("color_type", "color")

@@ -1,4 +1,4 @@
-import { Camera, CheckCircle2, Loader2, AlertCircle, ExternalLink, RefreshCw } from 'lucide-react';
+import { Camera, CheckCircle2, Loader2, AlertCircle, AlertTriangle, ExternalLink, RefreshCw } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 
@@ -12,6 +12,7 @@ export default function Navbar() {
     status: 'loading', // 'loading' | 'online' | 'offline'
     url: BACKEND_URL,
     colorizerReady: false,
+    failedModels: [], // model names whose loader raised — degraded mode
     message: 'Connecting to backend...',
   });
   const timerRef = useRef(null);
@@ -24,11 +25,17 @@ export default function Navbar() {
       if (response.ok) {
         const data = await response.json();
         const colorizerReady = data.models?.colorizer ?? data.models?.ddcolor ?? false;
+        // Degraded mode: backend up, but specific model loaders failed.
+        // load_errors is a { modelName: error } map from pipeline.health_status().
+        const failedModels = Object.keys(data.load_errors ?? {});
         setBackendState({
           status: 'online',
           url: data.url || BACKEND_URL,
           colorizerReady,
-          message: colorizerReady
+          failedModels,
+          message: failedModels.length > 0
+            ? `Degraded — ${failedModels.join(', ')} failed to load`
+            : colorizerReady
             ? 'Backend & All AI Models Ready'
             : 'Backend Ready (DDColor loading in background)',
         });
@@ -40,6 +47,7 @@ export default function Navbar() {
         status: 'offline',
         url: BACKEND_URL,
         colorizerReady: false,
+        failedModels: [],
         message: 'Backend unreachable. Retrying...',
       });
     }
@@ -100,16 +108,20 @@ export default function Navbar() {
               backendState.status === 'loading'
                 ? 'bg-amber-50 border-amber-300 text-amber-900 shadow-sm animate-pulse'
                 : backendState.status === 'online'
-                ? 'bg-emerald-50 border-emerald-300 text-emerald-900'
+                ? (backendState.failedModels?.length > 0
+                  ? 'bg-amber-50 border-amber-300 text-amber-900'
+                  : 'bg-emerald-50 border-emerald-300 text-emerald-900')
                 : 'bg-rose-50 border-rose-300 text-rose-900'
             }`}
           >
             {backendState.status === 'loading' && (
               <Loader2 className="w-4 h-4 text-amber-600 animate-spin flex-shrink-0" />
             )}
-            {backendState.status === 'online' && (
+            {backendState.status === 'online' && (backendState.failedModels?.length > 0 ? (
+              <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+            ) : (
               <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
-            )}
+            ))}
             {backendState.status === 'offline' && (
               <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
             )}
@@ -117,7 +129,7 @@ export default function Navbar() {
             <div className="flex items-center space-x-1.5">
               <span className="font-medium">
                 {backendState.status === 'loading' && 'Backend Loading:'}
-                {backendState.status === 'online' && 'Backend Online:'}
+                {backendState.status === 'online' && (backendState.failedModels?.length > 0 ? 'Backend Degraded:' : 'Backend Online:')}
                 {backendState.status === 'offline' && 'Backend Disconnected:'}
               </span>
 
@@ -134,7 +146,7 @@ export default function Navbar() {
 
               {backendState.status === 'online' && (
                 <span className="text-[11px] opacity-75 font-normal ml-1 hidden sm:inline">
-                  ({backendState.colorizerReady ? 'AI Fully Loaded' : 'ECCV16 Loading...'})
+                  ({backendState.colorizerReady ? 'AI Fully Loaded' : 'DDColor loading...'})
                 </span>
               )}
             </div>

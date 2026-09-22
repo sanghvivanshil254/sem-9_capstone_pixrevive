@@ -48,24 +48,26 @@ async def root():
 @app.get("/health")
 @app.get("/api/health")
 async def health_check():
-    colorizer_ready = False
-    fast_models_ready = False
+    """Per-model load truth, delegated to the pipeline.
+
+    `health_status()` reports a boolean per model plus each failed loader's
+    error, so degraded modes are visible instead of a blanket "ok".
+    """
     try:
         from services.image_service import pipeline
-        colorizer_ready = pipeline.is_colorizer_ready()
-        fast_models_ready = pipeline.is_ready()
+        payload = pipeline.health_status()
     except Exception:
         logging.getLogger(__name__).exception("Health check could not query the pipeline.")
+        payload = {"status": "unknown", "models": {}, "load_errors": {}, "device": None}
 
     return {
+        # `status` is HTTP liveness ("the API answered"); per-model truth lives
+        # in `models`, `ready`, and `load_errors` — degraded modes are visible
+        # there without changing the original "ok" contract.
         "status": "ok",
         "url": "http://localhost:8000",
-        "models": {
-            "fast_models": fast_models_ready,
-            "colorizer": colorizer_ready,
-            "ddcolor": colorizer_ready,
-        },
-        # Reflect real loader state — previously hard-coded True, so the frontend
-        # could show "ready" while every request would still block on load.
-        "ready": fast_models_ready,
+        "models": payload.get("models", {}),
+        "load_errors": payload.get("load_errors", {}),
+        "device": payload.get("device"),
+        "ready": payload.get("status") == "ready",
     }

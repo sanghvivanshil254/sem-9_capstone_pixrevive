@@ -1,8 +1,8 @@
 # PixRevive — Complete Project Documentation
-> **For Exam Preparation | Capstone Project**  
-> AI-Powered Photo Restoration Web Application
 
----
+*Verified against the code on 2026-09-22. Pipeline order, routes, endpoints, and
+weights in this document are taken from `backend/ai/pipeline/restoration_pipeline.py`,
+`pipeline_router.py`, `backend/routers/*`, and `backend/ai/download_weights.py`.*
 
 ## Table of Contents
 
@@ -12,881 +12,482 @@
 4. [Backend — Frameworks & Packages](#4-backend--frameworks--packages)
 5. [Frontend — Frameworks & Packages](#5-frontend--frameworks--packages)
 6. [AI Models Used](#6-ai-models-used)
-7. [The AI Pipeline — Stage-by-Stage](#7-the-ai-pipeline--stage-by-stage)
-8. [Pipeline Routing (Degradation-Aware)](#8-pipeline-routing-degradation-aware)
+7. [The AI Pipeline — Stage by Stage](#7-the-ai-pipeline--stage-by-stage)
+8. [Pipeline Routing](#8-pipeline-routing)
 9. [Module Breakdown](#9-module-breakdown)
 10. [API Endpoints](#10-api-endpoints)
-11. [Data Flow — End-to-End](#11-data-flow--end-to-end)
+11. [Data Flow — End to End](#11-data-flow--end-to-end)
 12. [Key Algorithms & Techniques](#12-key-algorithms--techniques)
 13. [Precautions & Safety Mechanisms](#13-precautions--safety-mechanisms)
-14. [Instructions to Run the Project](#14-instructions-to-run-the-project)
-15. [Model Weights & Files](#15-model-weights--files)
-16. [Important Design Decisions](#16-important-design-decisions)
-17. [Glossary](#17-glossary)
+14. [Running the Project](#14-running-the-project)
+15. [Model Weights](#15-model-weights)
+16. [Capabilities & Limitations](#16-capabilities--limitations)
 
 ---
 
 ## 1. Project Overview
 
-**PixRevive** is a full-stack web application that uses deep learning and classical computer vision to automatically restore old, damaged, and black-and-white photographs. Users upload a photo; the system analyzes it, routes it through an intelligent multi-stage AI pipeline, and returns a high-quality restored PNG.
+PixRevive restores scanned photographs: it repairs *physical* damage (tears,
+cracks, flakes, foxing) first, then denoises, colorizes, restores faces, and
+upscales — streaming per-stage progress to the browser over Server-Sent Events.
 
 ### Core Features
-| Feature | Description |
-|---|---|
-| **Damage Repair** | Removes scratches, white flakes, dust, and emulsion damage |
-| **Face Restoration** | Restores degraded facial details using GFPGAN |
-| **Colorization** | Converts grayscale/sepia photos to natural color using ECCV16 |
-| **Super-Resolution** | 4x upscaling using RealESRGAN with tiled inference |
-| **Smart Denoising** | Removes film grain, noise while preserving edges |
-| **Enhancement** | CLAHE contrast + Unsharp Mask (USM) sharpening |
+
+- 14-stage restoration pipeline with damage-repair-before-colorization ordering
+- DDColor (ICCV 2023) colorization for grayscale and sepia scans
+- LaMa inpainting of structural damage, with a face-wipeout circuit breaker
+- GFPGAN v1.4 face restoration, damage-aware and deferred for small faces
+- Real-ESRGAN x4 upscaling, 2K-normalized, tiled
+- Monotonic SSE progress stream audited by `scripts/check_progress_stream.py`
+- Health endpoint reporting per-model load truth (`load_errors`)
 
 ### Project Type
-- **Capstone / Karstone Project**
-- Full-stack application (React frontend + FastAPI backend + AI pipeline)
-- Modular, production-grade architecture
+
+- **Backend:** Python 3.12 / FastAPI (no virtual environments — system interpreter only)
+- **Frontend:** React 19 + Vite
+- **Inference:** PyTorch (CUDA when available, CPU fallback)
 
 ---
 
 ## 2. System Architecture
 
 ```
-+-------------------------------------------------------------+
-|                     FRONTEND (React + Vite)                 |
-|   ImageUploader -> ProgressBar -> Result Display            |
-|   Runs on: http://localhost:5173                             |
-+------------------------+------------------------------------+
-                         |  HTTP / Server-Sent Events (SSE)
-                         v
-+-------------------------------------------------------------+
-|                   BACKEND (FastAPI)                         |
-|   main.py -> Routers -> ImageService -> RestorationPipeline |
-|   Runs on: http://localhost:8000                             |
-+------------------------+------------------------------------+
-                         |
-                         v
-+-------------------------------------------------------------+
-|                 AI PIPELINE (18 Stages)                     |
-|                                                             |
-|  Normalize -> Analyze -> Route -> Face Detect -> Noise      |
-|  -> Damage Repair -> Denoising -> Face Restore -> Colorize  |
-|  -> Color Artifact Reduce -> Super-Resolution               |
-|  -> Harmonize -> Enhance -> Color Refine -> Debug Log       |
-|  -> Identity Validate -> Quality Control -> PNG Encode      |
-+-------------------------------------------------------------+
+Browser (React)
+   │  POST /api/process-stream (multipart)
+   ▼
+FastAPI (backend/main.py)
+   ├── routers/image_router.py      /api/upload · /api/process · /api/process-stream · /api/process/{id}/result|status
+   └── routers/admin_router.py      /api/admin/weights · /api/admin/training-data · (training = honest 501 stubs)
+   ▼
+services/image_service.py           singleton façade, task store, GPU semaphore
+   ▼
+ai/pipeline/restoration_pipeline.py 14-stage orchestrator (stage methods, timers, debug snapshots)
+   ├── ai/pipeline/pipeline_router.py    route selection per image
+   ├── ai/pipeline/pipeline_context.py   shared state: working_image, damage_masks, metadata, timers
+   └── stage modules: ai/preprocessing · ai/damage · ai/restoration · ai/colorization · ai/postprocessing · ai/validation
+   ▼
+ai/weights/                          all model checkpoints (git-ignored, downloaded by download_weights.py)
 ```
 
 ### Directory Structure
 
+See [CODEBASE_MAP.md](CODEBASE_MAP.md) for the full annotated tree. Top level:
+
 ```
-PixRevive/
-├── backend/
-│   ├── main.py                         # FastAPI app entry point
-│   ├── routers/
-│   │   ├── image_router.py             # Core image processing endpoints
-│   │   └── admin_router.py             # Model management / admin panel
-│   ├── services/
-│   │   └── image_service.py            # Thin orchestration layer (singleton)
-│   └── ai/
-│       ├── pipeline/
-│       │   ├── restoration_pipeline.py # 18-stage pipeline (main engine)
-│       │   ├── pipeline_router.py      # Degradation-aware routing
-│       │   ├── pipeline_context.py     # Shared pipeline state
-│       │   └── debug_logger.py         # Debug image saving
-│       ├── preprocessing/
-│       │   ├── image_normalizer.py     # Load, validate, orient, convert to RGB
-│       │   └── halftone_suppressor.py  # Remove halftone mesh artifacts
-│       ├── analysis/
-│       │   ├── quality_analyzer.py     # Blur/noise/contrast/color-type analysis
-│       │   ├── face_detector.py        # OpenCV Haar/DNN face detection
-│       │   └── quality_service.py      # Output quality validation
-│       ├── damage/
-│       │   ├── enhanced_detector.py    # Multi-scale damage detection
-│       │   ├── tearmark_detector.py    # Tearline / border damage detection
-│       │   └── mask_refiner.py         # Morphological mask cleanup
-│       ├── restoration/
-│       │   ├── scratch_restorer.py     # Microsoft "Old Photos" model
-│       │   ├── inpainting_engine.py    # LaMa + classical CV cascade
-│       │   ├── lama_restorer.py        # LaMa large-mask inpainting
-│       │   ├── face_restorer.py        # GFPGAN face restoration
-│       │   ├── super_resolution.py     # RealESRGAN x4 tiled
-│       │   ├── rrdbnet.py              # RRDB network definition
-│       │   └── pixel_preserver.py      # Non-damaged pixel protection
-│       ├── colorization/
-│       │   ├── eccv16_colorizer.py     # ECCV16 Caffe DNN colorizer
-│       │   └── color_refiner.py        # Color artifact reduction
-│       ├── postprocessing/
-│       │   ├── denoiser.py             # Wavelet + NLM + bilateral denoising
-│       │   ├── noise_router.py         # Noise type classification & routing
-│       │   └── enhancer.py             # CLAHE + USM + Harmonizer
-│       ├── validation/
-│       │   └── identity_validator.py   # Facial landmark identity check
-│       ├── models/
-│       │   ├── base_model.py           # Abstract base class for restorers
-│       │   └── zeroscratches/          # Microsoft scratch removal model files
-│       └── weights/                    # Downloaded model weight files
-│           ├── GFPGANv1.4.pth
-│           ├── RealESRGAN_x4plus.pth
-│           ├── big-lama.pt
-│           ├── facelib/
-│           └── eccv16/
-├── frontend/
-│   ├── src/
-│   │   ├── components/
-│   │   │   ├── ImageUploader.jsx   # Main upload/restore UI
-│   │   │   ├── Navbar.jsx
-│   │   │   ├── ProgressBar.jsx
-│   │   │   └── Footer.jsx
-│   │   ├── pages/
-│   │   │   ├── Home.jsx
-│   │   │   ├── Documentation.jsx
-│   │   │   └── WeightsAdmin.jsx    # Admin panel for model management
-│   │   └── services/               # Axios API call utilities
-│   └── index.html
-├── tests/                          # Backend unit tests
-├── e2e/                            # End-to-end Playwright tests
-└── restart_all.bat / start_dev.bat # Windows startup scripts
+backend/
+  main.py                     FastAPI app, CORS allowlist, /health
+  routers/                    image_router.py, admin_router.py
+  services/image_service.py   pipeline façade + task store
+  ai/
+    pipeline/                 restoration_pipeline, pipeline_router, pipeline_context, debug_logger
+    preprocessing/            impulse_denoiser, speck_suppressor, halftone_suppressor, image_normalizer
+    damage/                   enhanced_detector, mask_refiner, defect_segmenter, tearmark_detector
+    analysis/                 quality_analyzer, face_detector, content_region, quality_service
+    restoration/              face_restorer, super_resolution, inpainting_engine, lama_restorer, rrdbnet
+    colorization/             ddcolor_colorizer, color_refiner, vendored ddcolor/
+    postprocessing/           denoiser, enhancer (Harmonizer), noise_router
+    validation/               identity_validator, forensic_validator
+    orchestrator/             experimental action-loop (PIXREVIVE_USE_ORCHESTRATOR=1)
+    weights/                  checkpoints (git-ignored)
+frontend/                     React 19 + Vite (components: ImageUploader, ProgressBar, Navbar, Footer)
+tests/                        pytest suite + restoration_dataset fixtures (case1–case12)
+scripts/                      check_progress_stream.py, diagnostics/
+e2e/                          Playwright specs (run against CDP-attached Chrome)
 ```
 
 ---
 
 ## 3. Technology Stack
 
-| Layer | Technology | Version |
-|---|---|---|
-| **Frontend Framework** | React | ^19.2.7 |
-| **Frontend Build Tool** | Vite | ^8.1.1 |
-| **CSS Framework** | TailwindCSS | ^4.3.2 |
-| **Frontend Routing** | React Router DOM | ^7.18.1 |
-| **HTTP Client** | Axios | ^1.18.1 |
-| **Icons** | Lucide React | ^1.24.0 |
-| **Backend Framework** | FastAPI | Latest |
-| **Backend Server** | Uvicorn (ASGI) | Latest |
-| **Deep Learning** | PyTorch | >=2.0.0 |
-| **Computer Vision** | OpenCV (contrib) | 4.12.0.88 |
-| **Image Processing** | Pillow | >=9.5.0 |
-| **Numerical Computing** | NumPy | >=1.24.0 |
-| **Scientific Computing** | SciPy | >=1.10.0 |
-| **Image Science** | scikit-image | >=0.20.0 |
-| **Wavelet Processing** | PyWavelets (pywt) | Included |
-| **E2E Testing** | Playwright | Latest |
+| Layer | Technology |
+|---|---|
+| Backend framework | FastAPI + Uvicorn |
+| Language | Python 3.12 (system interpreter at `C:\Program Files\Python312\python.exe`) |
+| Deep learning | PyTorch, torchvision, basicsr 1.4.2 (pinned — GFPGAN/facexlib need it) |
+| Imaging | OpenCV (`opencv-contrib-python`, guided filter via `cv2.ximgproc`), NumPy, Pillow |
+| Faces | GFPGAN, facexlib, RetinaFace |
+| Colorization | DDColor (vendored inference source) |
+| Frontend | React 19, Vite, Tailwind CSS, lucide-react |
+| Streaming | Server-Sent Events over `StreamingResponse` |
+| Testing | pytest (backend), Playwright-over-CDP (e2e) |
 
 ---
 
 ## 4. Backend — Frameworks & Packages
 
 ### FastAPI
-The backend is built with **FastAPI**, a modern, high-performance Python web framework.
 
-- Automatic API docs (Swagger at `/docs`)
-- Async support for non-blocking I/O
-- Type validation via Pydantic
-- **CORS Middleware** configured: `allow_origins=["*"]` (development only)
-- **StaticFiles** middleware serves training data directory
+- App factory in `backend/main.py`; routers mounted at `/api` (image) and `/api/admin` (admin).
+- CORS is an explicit allowlist (`allow_credentials=True` forbids `*`); override via `PIXREVIVE_CORS_ORIGINS`.
+- `/static/training_data` is mounted from disk.
+- File-type and size validation live in `image_router.py` (`ALLOWED_MIME_TYPES`, `MAX_FILE_SIZE`).
+- A GPU semaphore serializes restorations so concurrent requests queue instead of OOM-ing.
 
-### Python Packages (ai/requirements.txt)
+### Key Python Packages (`backend/requirements.txt`)
 
-| Package | Purpose |
+| Package | Role |
 |---|---|
-| `torch>=2.0.0` | Core deep learning framework — runs GFPGAN, RealESRGAN, LaMa |
-| `torchvision>=0.15.0` | Vision transforms used by GFPGAN loading |
-| `torchaudio>=2.0.0` | Required for torch environment completeness |
-| `opencv-contrib-python==4.12.0.88` | **Critical** — DNN inference (ECCV16), guided filter, Canny edges, morphological ops |
-| `pillow>=9.5.0` | Image I/O — loading, saving PNG with embedded metadata |
-| `numpy>=1.24.0` | All array operations throughout the pipeline |
-| `scipy>=1.10.0` | Scientific filters |
-| `scikit-image>=0.20.0` | SSIM metrics, image quality |
-| `basicsr>=1.4.2` | Backbone for RealESRGAN architecture |
-| `facexlib>=0.3.0` | Face detection/parsing models used internally by GFPGAN |
-| `gfpgan>=1.3.8` | GFPGAN face restoration library |
-| `realesrgan>=0.3.0` | Real-ESRGAN super-resolution library |
-| `omegaconf>=2.3.0` | Config management for models |
-| `huggingface_hub>=0.14.0` | Model weight downloading from HuggingFace |
-| `pyyaml>=6.0` | YAML config parsing |
-| `einops>=0.6.1` | Tensor rearrangement for attention-based models |
+| `torch` / `torchvision` | All model inference |
+| `opencv-contrib-python` | Classical CV: black-hat/top-hat detection, NLM, CLAHE, guided filter |
+| `basicsr==1.4.2` | Required by GFPGAN/facexlib (pinned — do not let DDColor installs overwrite it) |
+| `gfpgan`, `facexlib` | Face restoration stack |
+| `realesrgan` | Super-resolution wrapper |
+| `huggingface_hub`, `pyyaml` | Weight downloads, config |
 
 ### Application Architecture (Backend)
 
-```
-main.py  (FastAPI App)
-|
-+-- /api/*           --> image_router.py     (upload, process, stream, result)
-+-- /api/admin/*     --> admin_router.py     (weight management, model status)
-+-- /health          --> built-in health check
-
-image_router.py  -->  ImageService.process_image()
-ImageService     -->  RestorationPipeline.process()  [singleton]
-```
+- **Singleton pipeline.** `services/image_service.py` constructs one `RestorationPipeline`; models load on daemon threads at import and `/api/health` reports their true state.
+- **PipelineContext.** A single mutable context carries `working_image`, `damage_masks` (sub-masks + `final`/`lama_mask`/`ns_mask`), `image_metadata`, faces/landmarks, timers, and the processing log. `sync_geometry_to_working_image()` rescales masks after any resolution change.
+- **Route then stages.** `PipelineRouter.route()` picks one of 6 named route plans; `restore()` executes stages whose route gates (or the user's explicit flags) enable them.
+- **Debug snapshots.** With `PIXREVIVE_DEBUG=1`, `DebugLogger.save_stage()` writes numbered PNGs per stage to `debug_output/`.
 
 ---
 
 ## 5. Frontend — Frameworks & Packages
 
 ### React 19 + Vite 8
-- **React**: UI library for building the component tree
-- **Vite**: Build tool / dev server for instant HMR
-- **React Router DOM v7**: Client-side routing between Home, Documentation, WeightsAdmin
+
+- Pages: `Home` (restore), `Documentation`, `WeightsAdmin`.
+- Components: `ImageUploader` (dropzone), `ProgressBar`, `Navbar` (health pill), `Footer`.
 
 ### Key Frontend Components
 
-| Component | File | Purpose |
-|---|---|---|
-| **ImageUploader** | `ImageUploader.jsx` | Drag-and-drop upload, option toggles (restore/repair/colorize/denoise), progress display, before/after comparison |
-| **ProgressBar** | `ProgressBar.jsx` | Visual progress indicator powered by SSE stream |
-| **Navbar** | `Navbar.jsx` | Top navigation bar |
-| **WeightsAdmin** | `WeightsAdmin.jsx` | Admin panel for downloading/managing AI model weights |
-| **Documentation** | `Documentation.jsx` | In-app user documentation page |
+- **`ProgressBar.jsx`** — mirrors the backend stage emission order (`STAGES` with nominal percentages, `EDGE_LABELS` for `loading`/`complete`/`done`). Resolves the active stage by id, falling back to percent; marks skipped stages done. Must stay in sync with the backend — `scripts/check_progress_stream.py` enforces the contract.
+- **`Navbar.jsx`** — polls `/health` every 5 s and renders one of four states: `loading`, `online` (green), `degraded` (amber — some model loader failed; reads `load_errors`), `offline` (red + retry).
+- **`WeightsAdmin.jsx`** — admin UI over `/api/admin/weights/*` and `/api/admin/training-data/*`.
 
 ### Communication with Backend
-- **Axios**: Used for regular HTTP requests (upload, status polling)
-- **Server-Sent Events (SSE)**: Real-time progress streaming via `/api/process-stream`
-- SSE events: `progress` (stage updates), `complete` (done), `error` (failure)
+
+- `POST /api/process-stream` (multipart) → SSE events `progress` / `complete` / `error`; then `GET /api/process/{task_id}/result` for the PNG.
+- `POST /api/process` for a one-shot synchronous restore.
 
 ---
 
 ## 6. AI Models Used
 
-### 1. ECCV16 Colorizer (Caffe DNN)
-- **Full Name:** "Colorful Image Colorization" — Zhang et al., ECCV 2016
-- **Type:** Caffe CNN model, loaded via OpenCV DNN (`cv2.dnn.readNetFromCaffe`)
-- **Purpose:** Converts grayscale/sepia photos to natural color
-- **Input:** L channel (lightness) from LAB color space, resized to 224×224
-- **Output:** AB channels (color) upscaled back to original resolution
-- **Files Needed:**
-  - `colorization_deploy_v2.prototxt` — network architecture
-  - `colorization_release_v2.caffemodel` — weights (~128MB)
-  - `pts_in_hull.npy` — 313 color cluster prior probability points
-- **Key Technical Detail:** Predicts 313 ab-space color bins. Class rebalancing layer (`class8_ab`) with prior probabilities loaded manually.
-- **Safety Guards:** Skipped if image < 96px on any side OR damage > 35%
+### 1. DDColor (ICCV 2023) — Colorization
 
-### 2. GFPGAN v1.4 (Face Restoration GAN)
-- **Full Name:** Generative Facial Prior GAN
-- **Type:** GAN (Generative Adversarial Network) — PyTorch
-- **Purpose:** Restores degraded, blurry, or damaged face regions
-- **Architecture:** `"clean"` arch, channel multiplier = 2, upscale = 1 (SR done separately)
-- **Weight File:** `GFPGANv1.4.pth` (~332MB)
-- **Dependency Models:** facexlib face detection/parsing models in `weights/facelib/`
-- **Identity Preservation:**
-  - Adaptive blend weight: 30% (sharp) / 40% (medium) / 50% (blurry)
-  - SSIM check: if SSIM < 0.55, weight drops to 22%
-  - 22% high-frequency skin texture from original added back to prevent "plastic" look
-  - Face mask feathered with 35×35 Gaussian blur for soft edges
+- `ai/colorization/ddcolor_colorizer.py` wrapping the vendored `ai/colorization/ddcolor/` source; checkpoint `weights/ddcolor/ddcolor_modelscope.pth`.
+- 512-px input, learned color head, chroma blended back onto the working luminance; smooth chrominance diffusion across inpainted zones. This is the only colorizer in the codebase.
 
-### 3. RealESRGAN x4 (Super-Resolution)
-- **Full Name:** Real-Enhanced Super-Resolution GAN
-- **Type:** RRDB (Residual in Residual Dense Block) Network — PyTorch
-- **Purpose:** 4x spatial upscaling — makes low-res photos crisp and sharp
-- **Weight File:** `RealESRGAN_x4plus.pth`
-- **Inference:** Tiled inference — tile_size=256, tile_pad=32 (prevents OOM)
-- **Output Cap:** Max 4096×4096, then normalized to 2K (longest side = 2048)
-- **Key Fix vs. Old Version:** Removed destructive MAX_INPUT_PIXELS=512×512 hard cap
+### 2. GFPGAN v1.4 — Face Restoration
 
-### 4. LaMa (Large Mask Inpainting)
-- **Full Name:** LaMa — Resolution-robust Large Mask inpainting
-- **Type:** PyTorch TorchScript model (`torch.jit.load`)
-- **Purpose:** Fills large damaged areas with plausible content
-- **Weight File:** `big-lama.pt`
-- **Requirements:** 8-pixel alignment (pad_factor=8)
-- **Mask Dilation:** 7×7 kernel ensures coverage of damage edges
-- **Pixel Preservation:** Only inpainted pixels are written back; undamaged areas untouched
+- `ai/restoration/face_restorer.py`, checkpoint `weights/GFPGANv1.4.pth` (plus `facelib/` and `CodeFormer/` support weights).
+- Multi-face, damage-aware blending (fidelity 0.85). Faces < 90 px are deferred to a post-super-resolution pass (stage 9c).
 
-### 5. Microsoft "Old Photos Back to Life" (zeroscratches)
-- **Library:** `zeroscratches` (wraps Microsoft CVPR 2020 model)
-- **Purpose:** Primary scratch/damage restorer — end-to-end neural network for old photos
-- **Fallback:** If unavailable, classical cascade (EnhancedDamageDetector + InpaintingEngine) takes over
+### 3. Real-ESRGAN x4plus — Super-Resolution
+
+- `ai/restoration/super_resolution.py`, checkpoint `weights/RealESRGAN_x4plus.pth`, RRDBNet architecture (`rrdbnet.py`).
+- Tiled inference; images are normalized toward 2K before ×4 and capped at 4096 px.
+
+### 4. Big-LaMa — Inpainting
+
+- `ai/restoration/lama_restorer.py` loading TorchScript `weights/big-lama.pt`; orchestrated by `inpainting_engine.py` with an OpenCV Telea fallback.
+- Fills the refined damage mask; seam feathering and a face-wipeout circuit breaker protect anatomical regions.
+
+### 5. Semantic Defect Segmenter (CVPR 2020 "Bringing Old Photos Back to Life")
+
+- `ai/damage/defect_segmenter.py`, checkpoint `weights/defect_detect/FT_Epoch_latest.pt`.
+- Stage 2 gatekeeper: when loaded and confident (< 15% coverage), its mask is authoritative for fine cracks/scratches; classical detectors then only contribute ultra-high-confidence flakes.
 
 ### 6. Face Detection
-- Uses **OpenCV DNN** or **facexlib's** pretrained face detection
-- Face bounding boxes stored in `context.image_metadata["faces"]` as `{"bbox": [x0, y0, x1, y1]}`
+
+- `ai/analysis/face_detector.py`: RetinaFace (`facelib/detection_Resnet50_Final.pth`) with a Haar fallback; all faces with bounding boxes + 5 landmarks, feeding protection zones in stages 2, 5, and 7.
 
 ---
 
-## 7. The AI Pipeline — Stage-by-Stage
+## 7. The AI Pipeline — Stage by Stage
 
-The `RestorationPipeline.process()` method executes **18 ordered stages**.  
-Models are loaded in **background threads** at startup (server responds immediately).
+All stages live in `backend/ai/pipeline/restoration_pipeline.py`. Route flags and
+user toggles decide which run; ordering is fixed.
 
-```
-Stage | Name                            | Progress %
-------|---------------------------------|-----------
-  1   | Normalize & Analyze             | 5-10%
-  2   | Color-type Normalization        | (part of stage 1)
-  3   | Degradation-aware Route         | (internal)
-  4   | Face Detection                  | 12%
-  5   | Noise Analysis                  | (internal)
-  6   | Damage Repair                   | 20-35%
-  7   | Smart Denoising                 | 60-65%
-  8   | Face Restoration (GFPGAN)       | 55%
-  9   | Colorization (ECCV16)           | 75-78%
- 10   | Color Artifact Reduction (pre)  | 82%
- 11   | Super-Resolution (RealESRGAN)   | 83%
- 12   | Harmonization                   | 85%
- 13   | Enhancement (CLAHE + USM)       | 88%
- 14   | Color Artifact Reduction (post) | 91%
- 15   | Debug Logging                   | (conditional)
- 16   | Identity Validation             | 93% (debug only)
- 17   | Quality Control                 | 95%
- 18   | PNG Encode                      | 98-100%
-```
+| # | Stage | Method | What it does |
+|---|---|---|---|
+| 0 | Impulse & speck suppression | `_stage_0_despeckle` | ROAD-test salt/pepper filter + SpeckSuppressor (autocorrelation + edge co-location). Runs **first** so specks are never misread as damage. |
+| 1 | Degradation analysis | `_stage_1_analyze` | `QualityAnalyzer`: blur score, noise σ (margin-robust MAD), damage %, `color_type` ∈ {grayscale, sepia, color}, grain-field flag. |
+| 1b | Early face detection | `_stage_4_face_detect` | RetinaFace + Haar; bboxes, 5 landmarks, ocular/oral protection zones. |
+| 2 | Multi-scale fracture masking | `_stage_2_fracture_masking` | U-Net gatekeeper + classical white-flake/wide-crack/scratch/3D-tear detectors + TearmarkDetector (sepia/color) + **dark-spot (foxing/mold) detector with a 2% coverage cap** + grain-field gate + `MaskRefiner` fusion (border strip, face-zone protection, LaMa/NS tier split). |
+| 3 | LaMa inpainting | `_stage_3_lama_inpaint` | Big-LaMa fill of the LaMa-tier mask, seam feathering, edge-energy face-wipeout circuit breaker. |
+| 2b | Damage cluster smoothing | `_stage_2b_damage_cluster_smooth` | Variance-gated smoothing of inpaint perimeters outside face safe-zones. |
+| 3b | Face re-detection | `_stage_3b_refresh_faces` | Re-scan post-inpaint canvas; recovers faces obscured by pre-repair damage. |
+| 5 | Spatially-gated denoise | `_stage_5_spatially_gated_denoise` | 3-zone NLM (face adaptive / mid / background) scaled to measured σ; background guard preserves film grain on clean areas. |
+| 6 | Colorization | `_stage_6_colorization` | DDColor (only when `color_type` ∈ {grayscale, sepia} and colorization enabled). |
+| 6c | Color artifact reduction | inline (`ColorArtifactReducer`) | Edge-aware bleed fix, chroma outlier suppression, banding reduction, face-protected local cast fix, global cast neutralization. |
+| 7 | Face restoration | `_stage_7_face_restoration` | GFPGAN v1.4 damage-aware composite; small faces deferred. |
+| 8 | Pre-SR anti-aliasing | `_stage_8_presr_antialiasing` | Bilateral filter on L* (+ chroma when noisy) before upscaling. |
+| 9 | Super-resolution | `_stage_9_super_resolution` | Real-ESRGAN x4plus tiled; Harmonizer blends inpaint seams. |
+| 9c | Deferred face pass | inline | GFPGAN on the 4× canvas for previously-small faces. |
+| 10 | Post-SR sharpening | `_stage_10_post_sr_sharpen` | Luminance-only LAB unsharp mask. |
+| 10b | Projector exhibition grading | `_stage_10b_projector_grade` | Exhibition CLAHE + shadow-lifting tone curve. |
+| 11 | Identity & quality validation | `_stage_11_validate` (+ orchestrator identity check) | IdentityValidator (SSIM + landmark distance), ForensicValidator residual checks. |
+| 12 | PNG encode | inline | Final PNG (lossless) + result download. |
 
-### Detailed Stage Descriptions
+### Stage 2 detector wiring (current truth)
 
-#### Stage 1 — Normalize & Analyze
-- `ImageNormalizer.normalize()`: Loads safely, EXIF orientation correction, handles transparency (composites over white), converts to RGB numpy array.
-- `QualityAnalyzer.analyze()`: Computes `blur_score`, `noise_score`, `contrast_score`, `color_type`, `damage_percentage`, `has_white_flakes`, `width`, `height`.
-- All metadata stored in `PipelineContext`.
-
-#### Stage 2 — Color-type Normalization
-- **Grayscale:** Strips any tint → true grayscale → 3-channel RGB
-- **Sepia + colorization requested:** Strips sepia warmth → neutral grayscale for clean ECCV16 input
-- **Color:** Preserves original colors as-is
-
-#### Stage 3 — Degradation-aware Route
-- `PipelineRouter.route()` reads metadata and selects one of 6 preset pipeline routes (see Section 8)
-
-#### Stage 4 — Face Detection
-- `FaceDetector.detect()` stores face bounding boxes in context metadata
-
-#### Stage 5 — Noise Analysis
-- `NoiseRouter.analyze()` classifies noise type and stores `noise_profile`
-
-#### Stage 6 — Damage Repair
-**Condition:** `enable_repair=True` AND (`has_white_flakes=True` OR `damage_pct >= 5%`)
-
-**Primary Path:** `ScratchRestorer.restore()` — Microsoft neural network (zeroscratches)
-
-**Fallback Classical Cascade:**
-1. `EnhancedDamageDetector.detect()` — multi-scale morphological damage mask
-2. `TearmarkDetector.detect()` — tear lines / border damage
-3. `HalftoneSuppressor.suppress()` — removes halftone printing patterns
-4. `MaskRefiner.refine()` — morphological mask cleanup
-5. `InpaintingEngine.inpaint()` — LaMa large-mask inpainting
-
-#### Stage 7 — Smart Denoising
-**Triggers:** `enable_denoise=True` OR grayscale image with `noise_score > 6.0` OR `noise_profile.has_noise=True`
-
-**Denoising Strategy by Noise Level (sigma):**
-| Noise Level | Strategy |
-|---|---|
-| sigma < 4 | Gentle wavelet pass (bior2.2, threshold=0.25) |
-| sigma 4–12 | Wavelet + dynamic bilateral filter |
-| sigma > 12 | Multi-stage wavelet + Fast NLM |
-
-**Artifact Prevention:** `ArtifactDetector` checks blocking/over-smoothing; rolls back if detected.
-**Stylization Pass:** `cv2.stylization()` after denoising (sigma_s=60, sigma_r=0.45) for residual grain.
-
-#### Stage 8 — Face Restoration (GFPGAN)
-- Runs only when: faces detected AND (blurry OR has damage)
-- Adaptive blend weight 30–50% based on blur_score
-- SSIM < 0.55 → weight drops to 22% (identity safety)
-- 22% high-freq skin texture from original added back
-- 35×35 Gaussian feathering on face mask for soft edges
-
-#### Stage 9 — Colorization (ECCV16)
-- Only for `color_type` = grayscale/sepia AND `enable_colorization=True`
-- Image → LAB space → L channel → ECCV16 → AB prediction → merge → RGB
-- Saturation capped at 180 (HSV) to prevent oversaturation
-- **Rollback:** If >88% of high-saturation pixels share one hue → revert to original
-- Color applied at **90% opacity** for natural look
-
-#### Stage 10 — Color Artifact Reduction (Pre-SR)
-- `ColorArtifactReducer.reduce_artifacts()` on AB channels in LAB space
-- Bilateral filtering of color channels only
-
-#### Stage 11 — Super-Resolution
-- `SuperResolution.restore()` — RealESRGAN x4 with tiled inference
-- Tile size: 256px, overlap padding: 32px
-- Output cap: 4096×4096, then normalized to 2K (longest side = 2048)
-
-#### Stage 12 — Harmonization
-- `Harmonizer.harmonize()` — smooths seams between restored patches and original
-- `cv2.ximgproc.guidedFilter` (radius=10, eps=100) on dilated rim of damage mask
-- Skipped if no damage mask exists
-
-#### Stage 13 — Enhancement
-- **CLAHE:** Applied only when `contrast_score < 30.0`
-- **USM (Unsharp Mask):** Applied only when `blur_score >= 60` (skipped on soft images to avoid halos)
-  - Parameters: percent=80, threshold=5 (gentler than previous version)
-
-#### Stage 14 — Color Artifact Reduction (Post-SR)
-- Same as Stage 10, applied again after super-resolution to clean upscaling artifacts
-
-#### Stage 15 — Debug Logging
-- Saves intermediate stage images to disk only when `PIXREVIVE_DEBUG=1`
-
-#### Stage 16 — Identity Validation
-- Facial landmark stability check (debug-only)
-- Warning logged but NEVER blocks the pipeline
-
-#### Stage 17 — Quality Control
-- `QualityService.validate()` — structural quality check
-- If fails: **reverts to original image** as safe fallback
-
-#### Stage 18 — PNG Encode
-- Lossless PNG with embedded text metadata:
-  - `Processing-Log`, `Pipeline-Time`, `Identity-Preserved`, `Pipeline-Version`, `Pipeline-Route`
+`detect_dark_spots()` **is wired** into Stage 2 (foxing/mold, T-1): it runs when
+the grain-field gate has not claimed the frame, its contribution is capped at
+2% coverage (larger dark responses are shadow/dark-texture false positives and
+are discarded), and the accepted sub-mask is stored as
+`context.damage_masks["dark_spots"]`.
 
 ---
 
-## 8. Pipeline Routing (Degradation-Aware)
+## 8. Pipeline Routing
 
-`PipelineRouter` selects one of 6 routes based on analyzed image properties — avoids running expensive operations unnecessarily.
+`ai/pipeline/pipeline_router.py` inspects Stage 1 metadata:
 
-### Route Selection Logic
+- `has_damage = has_white_flakes or damage_pct >= 5.0`; `heavy_damage = damage_pct >= 20.0`
+- `is_noisy = noise_score > 6.0`; `is_blurry = blur_score < 200.0`
 
-| Condition | Route Selected |
-|---|---|
-| color_type is grayscale or sepia | **BW_RESTORE** |
-| damage_percentage >= 20% (heavy) | **DAMAGED_FACE** |
-| Has damage AND blurry | **DAMAGED_FACE** |
-| Has damage (no blur) | **DAMAGED_NO_FACE** |
-| Noisy AND blurry | **NOISY_FACE** |
-| Noisy only | **NOISY_CLEAN** |
-| Clean, sharp | **CLEAN_ENHANCE** |
-| All other | **SAFE_FALLBACK** |
+### Routes
 
-### Route Stage Flags
+| Route | Damage repair | Faces | Denoise | SR | Notes |
+|---|---|---|---|---|---|
+| `CLEAN_ENHANCE` | – | – | – | ✔ | Clean images |
+| `NOISY_CLEAN` | – | – | ✔ | ✔ | Noise, no damage |
+| `NOISY_FACE` | – | ✔ | ✔ | ✔ | Noisy face |
+| `DAMAGED_NO_FACE` | ✔ | – | ✔ | ✔ | Damage, no face |
+| `DAMAGED_FACE` | ✔ | ✔ | ✔ | ✔ | Damage + face |
+| `BW_RESTORE` | – | ✔ | ✔ | ✔ | Undamaged B&W/sepia, no forced colorization |
+| `SAFE_FALLBACK` | – | – | – | ✔ | Conservative default for unknown profiles |
 
-| Route | Damage Repair | Face Restore | Denoise | SR |
-|---|:---:|:---:|:---:|:---:|
-| CLEAN_ENHANCE | No | No | No | Yes |
-| NOISY_CLEAN | No | No | Yes | Yes |
-| NOISY_FACE | No | Yes | Yes | Yes |
-| DAMAGED_NO_FACE | Yes | No | Yes | Yes |
-| DAMAGED_FACE | Yes | Yes | Yes | Yes |
-| BW_RESTORE | No | Yes | Yes | Yes |
-| SAFE_FALLBACK | No | Yes | Yes | Yes |
-
-> **Colorization is NEVER auto-routed** — always user-opt-in via `enable_colorization` flag.
+**Repair-before-restore invariant:** damaged grayscale/sepia photos are routed
+to `DAMAGED_FACE` ("repair scratches first, then restore") — never straight to
+`BW_RESTORE`, which skips repair and lets DDColor colorize scratch pixels with
+wrong hues. Routes are advisory: the user's explicit enable/disable flags win.
 
 ---
 
 ## 9. Module Breakdown
 
-### `pipeline/pipeline_context.py`
-Shared mutable state for one pipeline request:
-- `working_image`: current numpy array being processed
-- `image_metadata`: dict with all analysis results
-- `damage_masks`: dict of damage masks (raw, refined, final)
-- `processing_log`: list of log strings from each stage
-- `start_timer()` / `end_timer()`: stage timing utilities
+### `ai/pipeline/pipeline_router.py`
+Route selection (above). Stores the chosen plan in `metadata["pipeline_route"]`.
 
-### `preprocessing/image_normalizer.py`
-- Sets `Image.MAX_IMAGE_PIXELS = 100,000,000` (pixel bomb prevention)
-- Calls `img.verify()` then re-opens (verify() leaves file unstable)
-- Applies `ImageOps.exif_transpose()` for correct orientation
-- Composites transparent images over white background before RGB conversion
+### `ai/pipeline/pipeline_context.py`
+State container + `sync_geometry_to_working_image()` (mask/bbox/landmark rescale after resolution changes) + processing log.
 
-### `preprocessing/halftone_suppressor.py`
-- Detects and suppresses halftone dot patterns from print scans
-- FFT-based filtering to remove periodic dot-pattern frequency components
+### `ai/preprocessing/impulse_denoiser.py`
+ROAD statistic for salt/pepper outliers; density-invariance regression-tested (`check_impulse_robustness.py`).
 
-### `analysis/quality_analyzer.py`
-Returns metadata dict:
-- `blur_score`: Laplacian variance (higher = sharper)
-- `noise_score`: mean deviation from 5x5 Gaussian blur
-- `contrast_score`: std deviation of grayscale
-- `color_type`: "grayscale" | "sepia" | "color"
-- `damage_percentage`: estimated % damaged pixels
-- `has_white_flakes`: boolean for emulsion damage
+### `ai/preprocessing/speck_suppressor.py`
+Dense low-amplitude speck fields via autocorrelation + edge co-location.
 
-**Color Type Detection:**
-- Grayscale: mean RGB channel difference < 5.0
-- Sepia: warm pixel ratio > 0.70 OR (low saturation + warm hues)
-- Color: everything else
+### `ai/preprocessing/halftone_suppressor.py`
+Frequency-domain notch suppression for scanned halftone prints (Phase 4B will wire it as the moiré specialist).
 
-### `damage/enhanced_detector.py`
-Multi-stage detector:
-1. White flakes (bright, low-saturation, high local contrast)
-2. Black spots (dark relative to local background)
-3. Scratches (linear morphological patterns)
-4. Edge-aware filtering to prevent false positives
-5. Confidence-weighted binary mask output
+### `ai/preprocessing/image_normalizer.py`
+Bit-depth/channel normalization and `detect_and_crop_borders()` for scanner margins.
 
-### `postprocessing/denoiser.py`
-Three denoising classes:
-- **`ArtifactDetector`**: Detects blocking (local variance analysis) and over-smoothing (Canny edge loss)
-- **`WaveletDenoiser`**: `pywt.wavedec2()` / `waverec2()` with soft thresholding. Uses `bior2.2` (smooth, prevents Haar step artifacts)
-- **`AdaptiveDenoiser`**: Selects strategy based on noise sigma
-- **`SmartDenoiser`**: Iterative wrapper; rolls back if candidate is worse than original
+### `ai/analysis/quality_analyzer.py`
+Blur (Laplacian variance), noise σ (content-region robust MAD), color-type classification, grain-field flag, `content_region.py` margin-robust statistics (the case8 fix).
 
-### `postprocessing/enhancer.py`
-- **`Harmonizer`**: Guided filter seam blending at damage mask boundaries
-- **`Enhancer`**: CLAHE adaptive contrast, USM sharpening, optional color cast correction
+### `ai/damage/enhanced_detector.py`
+Classical detectors: white flakes, wide cracks, directional scratches, 3D paper tears, thin crack networks (Hessian + multi-scale black-hat), **dark spots (foxing/mold)**, edge damage.
 
-### `colorization/color_refiner.py`
-`ColorArtifactReducer.reduce_artifacts()`:
-- Reduces color bleeding at edges after colorization
-- Bilateral filtering on AB channels of LAB image
-- Applied pre-SR and post-SR when colorization occurred
+### `ai/damage/mask_refiner.py`
+Fuses sub-masks, strips photo-border artifacts, protects ocular/oral zones, splits into LaMa-tier and NS-tier masks.
+
+### `ai/damage/tearmark_detector.py`
+3-pass saturation-aware emulsion-flake detector for sepia/color photos.
+
+### `ai/damage/defect_segmenter.py`
+U-Net learned defect segmentation (Stage 2 gatekeeper).
+
+### `ai/postprocessing/noise_router.py`
+`NoiseClassifier`/`NoiseRouter` — 30 declared noise types routed to the right filter family.
+
+### `ai/postprocessing/denoiser.py`
+Wavelet/adaptive denoiser stack; `SmartDenoiser` used where route flags request extra denoising.
+
+### `ai/postprocessing/enhancer.py`
+`Harmonizer` — guided-filter seam blending along inpainting rims. (The former `Enhancer` class was dead code and was removed; its global-cast logic lives on in `ColorArtifactReducer.neutralize_global_cast`.)
+
+### `ai/colorization/color_refiner.py`
+`ColorArtifactReducer` (bleed, splotch, banding, local + **global** cast with face protection), `FacialSkinToneProtector`, `BackgroundNeutralizer`.
+
+### `ai/validation/*`
+`identity_validator.py` (SSIM + landmark distance), `forensic_validator.py` (residual defect & inpaint quality scoring).
 
 ---
 
 ## 10. API Endpoints
 
-All endpoints prefixed with `/api`.
+Base URL `http://localhost:8000`. Interactive docs at `/docs` (FastAPI).
 
-### `POST /api/upload`
-- **Purpose:** Validate and acknowledge file upload (no processing)
-- **Input:** `multipart/form-data` with `file`
-- **Validation:** MIME type (JPEG/PNG/WebP), max 25MB
-- **Returns:** `{ filename, content_type, size_bytes, message }`
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/upload` | Upload helper (validated, staged for processing) |
+| `POST /api/process` | Synchronous restore → PNG bytes |
+| `POST /api/process-stream` | SSE restore: `progress` events (`stage`, `percent`, `message`), terminal `complete`/`error` |
+| `GET /api/process/{task_id}/result` | Restored PNG |
+| `GET /api/process/{task_id}/status` | Task status snapshot |
+| `GET /api/health` (alias `/health`) | **Per-model truth**: `status`, `models` booleans (`defect_segmenter`, `lama`, `gfpgan`, `realesrgan`, `ddcolor`), `load_errors` map, `device`, `ready` |
+| `POST /api/admin/weights/upload` | Upload/replace a checkpoint |
+| `GET /api/admin/weights/status` | On-disk weights inventory |
+| `GET/POST/PUT/DELETE /api/admin/training-data/pairs…` | Training-pair CRUD |
+| `POST /api/admin/training/start` · `GET /api/admin/training/status` | **Honest 501 stubs** — no trainer exists; endpoints say so instead of pretending |
 
-### `POST /api/process`
-- **Purpose:** Synchronous — blocks until complete, returns PNG bytes
-- **Input:** `file` + form fields: `restore`, `repair`, `colorize`, `denoise` (bools), `device` (str)
-- **Returns:** PNG binary, `Content-Disposition: attachment; filename="restored.png"`
+Admin endpoints are protected by `PIXREVIVE_ADMIN_TOKEN`.
 
-### `POST /api/process-stream`
-- **Purpose:** Async streaming via SSE — returns progress events, then task_id
-- **Input:** Same as `/api/process`
-- **Returns:** `text/event-stream`
-  - `event: progress` → `{ stage, percent, message }`
-  - `event: complete` → `{ percent: 100, message, task_id }`
-  - `event: error` → `{ message }`
-- **Architecture:** Thread → asyncio.Queue → SSE generator
+### Health truth
 
-### `GET /api/process/{task_id}/result`
-- **Purpose:** Download PNG after stream completes
-- **Returns:** PNG file response
-
-### `GET /api/process/{task_id}/status`
-- **Purpose:** Poll task status (non-SSE fallback)
-- **Returns:** `{ task_id, status, progress[], error }`
-
-### `GET /health` or `GET /api/health`
-- **Returns:** `{ status, models: { fast_models, colorizer, ddcolor }, ready }`
-
-### Task Management
-- **TTL:** Tasks older than **30 minutes** auto-pruned (memory + temp file deleted)
-- **In-memory store:** `_tasks` dict → `{ status, progress[], result_path, created_at }`
+`main.py` delegates to `pipeline.health_status()`. If a background loader
+raises, its name and error text appear in `load_errors`; the Navbar renders an
+amber **degraded** pill instead of a green "all loaded".
 
 ---
 
-## 11. Data Flow — End-to-End
+## 11. Data Flow — End to End
 
-```
-User Browser
-  |
-  | 1. Select image, choose options (restore/repair/colorize/denoise)
-  | 2. POST /api/process-stream (multipart form)
-  v
-FastAPI image_router.py
-  |
-  | 3. Validate MIME type & file size (max 25MB)
-  | 4. Create task_id (UUID hex, 12 chars)
-  | 5. Start background thread: ImageService.process_image()
-  | 6. Open SSE stream back to browser
-  v
-ImageService.process_image()
-  |
-  | 7. Forward to RestorationPipeline.process()
-  v
-RestorationPipeline.process()
-  |
-  | 8.  Wait for models (max 120s if still loading)
-  | 9.  Stage 1: ImageNormalizer.normalize() -> RGB numpy array
-  | 10. Stage 1: QualityAnalyzer.analyze() -> metadata dict
-  | 11. Stage 2: Strip sepia/grayscale tints
-  | 12. Stage 3: PipelineRouter.route() -> route preset
-  | 13. Stage 4: FaceDetector.detect() -> face bboxes
-  | 14. Stage 5: NoiseRouter.analyze() -> noise_profile
-  |
-  | [If damage detected]
-  | 15. Stage 6: ScratchRestorer -> OR -> classical cascade
-  |
-  | [If denoising needed]
-  | 16. Stage 7: NoiseRouter.reduce() -> SmartDenoiser fallback
-  |              -> cv2.stylization() grain removal
-  |
-  | [If faces found]
-  | 17. Stage 8: FaceRestorer (GFPGAN) + identity blend
-  |
-  | [If colorization requested]
-  | 18. Stage 9:  ECCV16Colorizer.colorize() (LAB -> AB prediction)
-  | 19. Stage 10: ColorArtifactReducer (pre-SR)
-  |
-  | 20. Stage 11: SuperResolution.restore() (RealESRGAN x4 tiled)
-  | 21. Stage 12: Harmonizer.harmonize() (guided filter seam blend)
-  | 22. Stage 13: Enhancer.enhance() (CLAHE + USM)
-  |
-  | [If colorization was applied]
-  | 23. Stage 14: ColorArtifactReducer (post-SR)
-  |
-  | 24. Stages 15-17: Debug / Identity / Quality Control
-  | 25. Stage 18: Encode as PNG with metadata in text chunks
-  |
-  | 26. Return PNG bytes
-  v
-image_router.py
-  |
-  | 27. Save PNG to temp_results/{task_id}.png
-  | 28. Emit SSE "complete" event with task_id
-  v
-User Browser
-  |
-  | 29. On "complete": GET /api/process/{task_id}/result
-  | 30. Display before/after comparison
-```
+1. Upload via `/api/process-stream` (multipart: file + flags `restore/repair/colorize/denoise/device`).
+2. Task id issued; GPU semaphore acquired; `PipelineContext` created.
+3. Stage 1 analysis → router picks the route plan.
+4. Stages execute per route/flags, emitting `progress` events (stage id + monotonic percent — audited by `scripts/check_progress_stream.py`).
+5. Terminal `complete` (with task id) or `error` event.
+6. Client fetches `/api/process/{task_id}/result` (lossless PNG).
+7. Task store holds status/result until pruned (Phase 3 adds startup pruning).
 
 ---
 
 ## 12. Key Algorithms & Techniques
 
-### Laplacian Variance (Blur Detection)
-```python
-blur_score = cv2.Laplacian(gray, cv2.CV_64F).var()
-```
-- High variance → sharp (many edges, high frequency detail)
-- Low variance → blurry
-
-### Wavelet Denoising (bior2.2)
-```python
-coeffs = pywt.wavedec2(channel, 'bior2.2', level=3)
-thresholded = pywt.threshold(d, value=threshold, mode='soft')
-reconstructed = pywt.waverec2(new_coeffs, 'bior2.2')
-```
-- `bior2.2` chosen over `haar` to prevent 2x2 block/step artifacts
-- Soft thresholding: shrinks coefficients toward zero without hard cuts
-
-### Non-Local Means (NLM) Denoising
-```python
-cv2.fastNlMeansDenoisingColored(bgr, None, h=h_luma, hColor=h_luma,
-    templateWindowSize=7, searchWindowSize=21)
-```
-- Compares each pixel to similar patches across the full image
-- `h` controls filtering strength (higher → more smoothing, risk of blurring)
-
-### CLAHE
-- Divides image into tiles, equalizes histogram per tile
-- Clips contrast limit to prevent noise amplification
-- Applied globally only when `contrast_score < 30.0`
-
-### Guided Filter (Harmonizer)
-```python
-cv2.ximgproc.guidedFilter(img, img, radius=10, eps=100)
-```
-- Edge-preserving filter — smooths regions while respecting natural edges
-- Blends damage mask rim boundaries seamlessly
-
-### SSIM (Structural Similarity Index)
-- Measured on face ROI between original and GFPGAN-restored versions
-- Components: luminance, contrast, structure
-- Threshold: SSIM < 0.55 → reduce blend weight to 22%
-
-### LAB Color Space
-- ECCV16 works in LAB: L (lightness), A and B (color channels)
-- Model predicts AB only; original L preserved → natural brightness retained
-
-### Tiled Inference (RealESRGAN)
-- Split into 256×256 tiles with 32px overlap
-- Each tile processed independently
-- Stitch using no-overlap output regions
-- Prevents OOM on large inputs without quality loss from pre-downscaling
+- **ROAD statistic** — rank-ordered absolute deviations for impulse-noise immunity before any analysis.
+- **Margin-robust noise estimation** — `content_region.robust_sigma` computes σ on the content mask only; flat scanner margins no longer dilute the estimate (case8 regression).
+- **Black-hat / top-hat morphology** — small dark (foxing) / bright (flake) features vs. a scale-adapted elliptical kernel; multi-scale variants for crack networks.
+- **Non-Local Means, 3-zone** — separate strength per face / mid / background region; σ-scaled; grain-preserving background guard.
+- **DDColor** — transformer-based learned colorization (ICCV 2023).
+- **Guided filter (Harmonizer)** — edge-aware seam blending on inpaint rims.
+- **SSIM** — identity preservation scoring.
+- **LAB color space** — all color correction operates on perceptual channels; luminance-only sharpening avoids chroma halos.
+- **Tiled inference** — Real-ESRGAN tiles with overlap for 2K→4K+ outputs within GPU memory.
 
 ---
 
 ## 13. Precautions & Safety Mechanisms
 
-### Input Validation
+### Input validation
+MIME allowlist + size cap; reject early with 400s.
 
-| Check | Limit |
-|---|---|
-| File MIME type | JPEG, PNG, WebP only |
-| File size | Max **25MB** |
-| Image pixel count | Max **100,000,000** pixels |
-| Image format | Verified with `PIL.Image.verify()` before processing |
+### Processing safety
+- **Face-wipeout circuit breaker** — aborts inpainting whose mask would erase facial anatomy (edge-energy ratio thresholds).
+- **Foxing coverage cap** — dark-spot contributions > 2% of frame are treated as shadow/dark-texture false positives and discarded.
+- **Grain-field gate** — high content σ with low structural damage estimate routes noise to denoising instead of inpainting.
+- **GPU semaphore** — serializes heavy restorations.
+- **Model-load isolation** — each loader's failure is recorded, never crashes the app; degraded mode is visible.
 
-### Processing Safety
-
-| Mechanism | Description |
-|---|---|
-| Model loading timeout | Max 120 seconds; RuntimeError if exceeded |
-| Colorization size guard | ECCV16 skipped if image < 96px on any side |
-| Colorization damage guard | ECCV16 skipped if damage > 35% (color bleeding risk) |
-| Colorization rollback | Reverted if pathological single-hue saturation (>88%) |
-| Face identity guard (SSIM) | GFPGAN blend reduced to 22% if SSIM < 0.55 |
-| GFPGAN conditional run | Skipped on sharp, undamaged images to preserve identity |
-| Denoising artifact detection | Rolls back if blocking or over-smoothing detected |
-| Quality control fallback | Returns original if output fails structural validation |
-| Exception isolation | Every stage wrapped in try/except; failures logged, not propagated |
-| Pixel Preserver | LaMa output composited only onto damage areas; undamaged pixels untouched |
-
-### Memory Management
-- Task results older than **30 minutes** auto-pruned
-- RealESRGAN output capped at **4096×4096** before 2K normalization
-- Models loaded in background threads; server starts immediately
-- CUDA cache cleared on model unload
+### Memory management
+Tiled SR, 4096 px output cap, 2K normalization, explicit context image swaps.
 
 ### Security
-- **Pixel bomb prevention:** `Image.MAX_IMAGE_PIXELS = 100,000,000`
-- **CORS:** Restricted in production (currently `"*"` for development only)
-- **File validation:** MIME type + Pillow content verification
+CORS allowlist (credentials-safe), admin token, no shell-outs from request handlers, static mount limited to `training_data`.
 
 ---
 
-## 14. Instructions to Run the Project
+## 14. Running the Project
 
 ### Prerequisites
-- Python 3.9+ (with venv support)
-- Node.js 18+ (with npm)
-- Windows OS (startup scripts are .bat)
-- GPU (optional; CUDA recommended for speed)
 
-### Step 1: Clone Repository
-```bash
-git clone <repo-url>
-cd PixRevive
+- Windows with Python 3.12 at `C:\Program Files\Python312\python.exe` — **no virtual environments, ever**; no bare `python`/`pip`/`pytest` (PATH may resolve the wrong interpreter).
+- Node.js for the frontend.
+- ~2.4 GB free for model weights on the project drive.
+
+### Step 1 — Backend dependencies
+
+```powershell
+& "C:\Program Files\Python312\python.exe" -m pip install -r backend/requirements.txt
 ```
 
-### Step 2: Backend Setup
-```bash
+### Step 2 — Model weights
+
+```powershell
+& "C:\Program Files\Python312\python.exe" backend/ai/download_weights.py
+```
+
+Downloads (GitHub releases / Hugging Face, `urllib` — never a hub cache) into
+`backend/ai/weights/`: GFPGANv1.4, RealESRGAN_x4plus, big-lama, CodeFormer +
+facelib, DDColor, defect_detect. The alternative WeightsAdmin UI exists, and
+DDColor auto-download is controlled by `PIXREVIVE_DDCOLOR_AUTODOWNLOAD`.
+
+### Step 3 — Start the backend
+
+```powershell
 cd backend
-python -m venv venv
-venv\Scripts\activate
-pip install fastapi uvicorn
-pip install -r ai/requirements.txt
+$env:PYTHONPATH='backend'
+& "C:\Program Files\Python312\python.exe" -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
-### Step 3: Download AI Model Weights
-```bash
-# Option A: Script
-python backend/ai/download_weights.py
+Models load on background threads; `GET /api/health` shows per-model truth.
 
-# Option B: ECCV16 only
-python backend/ai/install_eccv16.py
+### Step 4 — Start the frontend
 
-# Option C: Use WeightsAdmin UI after server starts
-```
-
-Required files in `backend/ai/weights/`:
-- `GFPGANv1.4.pth`
-- `RealESRGAN_x4plus.pth`
-- `big-lama.pt`
-- `facelib/` (detection + parsing models — auto-downloaded)
-- `eccv16/colorization_deploy_v2.prototxt`
-- `eccv16/colorization_release_v2.caffemodel`
-- `eccv16/pts_in_hull.npy`
-
-### Step 4: Frontend Setup
-```bash
+```powershell
 cd frontend
 npm install
-```
-
-### Step 5: Start Both Servers
-
-**Option A — Batch script (Windows):**
-```bat
-.\start_dev.bat
-```
-
-**Option B — Manual:**
-```bash
-# Terminal 1: Backend
-cd backend
-venv\Scripts\activate
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-
-# Terminal 2: Frontend
-cd frontend
 npm run dev
 ```
 
-### Step 6: Open in Browser
-- Frontend: http://localhost:5173
-- API docs (Swagger): http://localhost:8000/docs
-- Health check: http://localhost:8000/health
+### Debug mode
 
-### Debug Mode
-```bat
-set PIXREVIVE_DEBUG=1
-REM Then restart backend — saves stage images per request
+`PIXREVIVE_DEBUG=1` writes numbered stage snapshots to `debug_output/` (e.g. `02_after_damage_detect.png`).
+
+### Running tests
+
+```powershell
+$env:PYTHONPATH='backend'
+& "C:\Users\sangh\AppData\Roaming\Python\Python312\Scripts\pytest.exe" tests/
 ```
 
-### Running Tests
-```bash
-# Backend unit tests
-cd backend && pytest tests/
+Baseline and Phase-1 logs: `docs/baseline_test_run.md`, `docs/baseline_pytest_output.txt`, `docs/phase1_pytest_output.txt`.
 
-# E2E tests
-npx playwright test
-```
+E2E specs in `e2e/` run against an already-running Chrome attached via CDP on port 9222 (Playwright driver downloads are blocked in this environment — see `AGENTS.md`).
 
 ---
 
-## 15. Model Weights & Files
+## 15. Model Weights
 
-| Model | File | Size | Source |
-|---|---|---|---|
-| GFPGAN v1.4 | `GFPGANv1.4.pth` | ~332MB | GitHub: TencentARC/GFPGAN |
-| RealESRGAN x4 | `RealESRGAN_x4plus.pth` | ~67MB | GitHub: xinntao/Real-ESRGAN |
-| LaMa | `big-lama.pt` | ~200MB | HuggingFace: smartywu/big-lama |
-| ECCV16 Caffe | `colorization_release_v2.caffemodel` | ~128MB | richzhang/colorization |
-| ECCV16 Prototxt | `colorization_deploy_v2.prototxt` | ~4KB | richzhang/colorization |
-| ECCV16 Prior | `pts_in_hull.npy` | ~2KB | richzhang/colorization |
-| Face Detection | `detection_Resnet50_Final.pth` | ~109MB | facexlib (auto-downloaded) |
-| Face Parsing | `parsing_parsenet.pth` | ~85MB | facexlib (auto-downloaded) |
+Canonical manifest: `backend/ai/download_weights.py` → `backend/ai/weights/`
+(git-ignored; re-downloadable at any time).
 
----
+| Path under `weights/` | Model | Pipeline use |
+|---|---|---|
+| `GFPGANv1.4.pth` | GFPGAN v1.4 | Stages 7 / 9c |
+| `RealESRGAN_x4plus.pth` | Real-ESRGAN x4 | Stage 9 |
+| `big-lama.pt` (+ `big-lama/` files) | Big-LaMa TorchScript | Stage 3 |
+| `ddcolor/ddcolor_modelscope.pth` | DDColor ICCV 2023 | Stage 6 |
+| `defect_detect/FT_Epoch_latest.pt` | Semantic defect segmenter (CVPR 2020) | Stage 2 gatekeeper |
+| `CodeFormer/codeformer.pth` | CodeFormer | GFPGAN support |
+| `facelib/detection_Resnet50_Final.pth`, `facelib/parsing_parsenet.pth` | RetinaFace + parsing | Face detection / parsing |
 
-## 16. Important Design Decisions
-
-### Why an 18-Stage Pipeline?
-Each stage is modular and independently toggled. The pipeline router skips unnecessary stages (e.g., no face restoration on landscapes), reducing processing time from minutes to seconds.
-
-### Why Background Thread Loading?
-AI models take 20–60 seconds to load. Background threads allow FastAPI to start immediately and respond to health checks while models load in parallel. A `threading.Event` (`_models_ready`) gates processing until ready.
-
-### Why PNG Output (Not JPEG)?
-PNG is lossless — restoration work should never re-introduce JPEG compression artifacts. PNG text chunks also carry pipeline metadata for debugging.
-
-### Why Tiled Inference for RealESRGAN?
-Running a full 4K image through RRDB in one pass exceeds GPU VRAM. Tiling with overlap padding avoids OOM AND avoids quality loss from downscaling.
-
-### Why Two Color Artifact Reduction Passes?
-Colorization introduces AB channel bleeding at edges. SR upscaling amplifies these. Running refinement before SR (reduce source artifacts) and after SR (clean upscaling artifacts) produces cleaner results.
-
-### Why is Colorization Never Auto-Routed?
-Colorization is an irreversible artistic decision. Auto-colorizing a photo the user wanted in black-and-white would be incorrect. It is always **user-opt-in only**.
-
-### Why zeroscratches Over Pure Classical CV?
-Classical mask-then-inpaint struggles with complex overlapping damage that is hard to mask accurately. The Microsoft end-to-end model was trained on real old photos and produces significantly better results, especially for scratches and emulsion flakes.
-
-### Why SSE for Progress?
-Processing takes 30–120 seconds. Streaming progress over Server-Sent Events gives real-time stage-by-stage feedback (e.g., "Detecting faces... 12%", "Colorizing... 75%") instead of a blank loading screen.
+Note: `realesr-general-x4v3.pth` may exist on disk but is **not** referenced by
+the code (removed from the manifest in Phase 1); the retired Microsoft
+scratch-removal stack was dropped from `requirements.txt` in Phase 1.
 
 ---
 
-## 17. Glossary
+## 16. Capabilities & Limitations
 
-| Term | Definition |
-|---|---|
-| **CLAHE** | Contrast Limited Adaptive Histogram Equalization — local contrast enhancement |
-| **USM** | Unsharp Mask — sharpening by subtracting a blurred version from original |
-| **NLM** | Non-Local Means — denoising by comparing patches across the image |
-| **SSIM** | Structural Similarity Index — image quality metric (0–1, higher is more similar) |
-| **LAB** | Perceptual color space: L=lightness, A=green-red axis, B=blue-yellow axis |
-| **GAN** | Generative Adversarial Network — ML model with generator + discriminator |
-| **RRDB** | Residual in Residual Dense Block — backbone architecture of RealESRGAN |
-| **Inpainting** | Filling missing/damaged image regions with plausible content |
-| **Halftone** | Printing pattern of tiny dots (newspaper/magazine) that can fake damage |
-| **EXIF** | Metadata embedded in photos; includes orientation flag |
-| **Caffe** | Early deep learning framework; ECCV16 was trained in Caffe |
-| **TorchScript** | PyTorch model serialization format used by LaMa (`big-lama.pt`) |
-| **SSE** | Server-Sent Events — one-way real-time HTTP streaming server to browser |
-| **VRAM** | Video RAM — GPU memory; limited resource for deep learning |
-| **OOM** | Out of Memory — error when model/image exceeds available RAM/VRAM |
-| **Feathering** | Gaussian-blurring a mask edge for smooth, seamless blending |
-| **Tiled inference** | Processing large images in overlapping tiles to avoid memory limits |
-| **Pixel Preserver** | Composites inpainted result only onto damaged regions |
-| **Pipeline Route** | Preset configuration dict controlling which stages run |
-| **PipelineContext** | Shared mutable state object passed through all 18 pipeline stages |
-| **bior2.2** | Biorthogonal 2.2 wavelet — smooth wavelet basis preventing step artifacts |
-| **soft threshold** | Wavelet technique that shrinks coefficients toward zero smoothly |
-| **Guided filter** | Edge-preserving smoothing filter used for seam blending |
-| **SSIM identity check** | Comparing face region before/after GFPGAN to detect identity drift |
+Derived from the per-damage-type coverage audit in
+[docs/DAMAGE_TAXONOMY_MAPPING.md](docs/DAMAGE_TAXONOMY_MAPPING.md).
+
+### Recovered (deterministic, wired stages)
+
+- **Noise:** impulse/salt-pepper, speckle, Gaussian & film grain (grain deliberately preserved on clean backgrounds), chroma noise, JPEG blocking/ringing; banding partially.
+- **Physical damage:** surface scratches, dust/debris, creases & folds, small tears, emulsion cracking/crazing, 3D torn corners/edges.
+- **Foxing / mold speckles:** black-hat dark-spot detector wired into Stage 2 with shadow protection (component size + circularity filters, 2% coverage cap).
+- **Tone & color:** overall fading (CLAHE + filmic curve), yellowing/sepia neutralization, unnatural casts — local (face-protected) and global (DDColor bias).
+- **Faces:** multi-face detection, landmark-guided protection, GFPGAN with damage-aware blending, identity validation.
+
+### Reconstructed (generative — plausible, not guaranteed)
+
+- **Missing regions** via LaMa: small/medium losses fill with high-confidence plausible content; **large fills are fabrication** and should be treated as such (labeling large-coverage fills is planned T-2 work).
+- **Damaged faces** via GFPGAN: identity accuracy is fundamentally generative; validators score but cannot guarantee likeness.
+
+### Out of scope (honest gaps)
+
+- Motion / out-of-focus blur (no deblur stage yet — planned T-3).
+- Dewarping/curl (T-4), flat-field vignetting (T-5), channel realignment (T-8).
+- Illegible text (no OCR), double exposure/ghosting (under-determined — flagged, not processed), silver mirroring beyond tone correction.
 
 ---
 
-*Document generated for PixRevive Capstone Project — August 2026*
-*Pipeline Version: v3.0 | Backend: FastAPI + PyTorch | Frontend: React 19 + Vite 8*
+*Related documents: [README.md](README.md) · [CODEBASE_MAP.md](CODEBASE_MAP.md) · [docs/DAMAGE_TAXONOMY_MAPPING.md](docs/DAMAGE_TAXONOMY_MAPPING.md) · [docs/EXECUTION_PLAN.md](docs/EXECUTION_PLAN.md)*

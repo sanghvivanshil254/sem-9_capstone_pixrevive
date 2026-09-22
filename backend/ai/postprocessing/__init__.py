@@ -1,11 +1,11 @@
 """
 Postprocessing module for PixRevive.
 
-This module contains image enhancement and refinement components:
+This module contains image refinement components:
+- enhancer.py: Harmonizer — guided-filter seam blending along inpainting rims
 - denoiser.py: Advanced denoising with artifact prevention
-- enhancer.py: Context-aware sharpening and contrast enhancement
 """
 
-from .enhancer import Harmonizer, Enhancer
+from .enhancer import Harmonizer
 from .denoiser import ArtifactDetector, WaveletDenoiser, AdaptiveDenoiser
 from .noise_router import NoiseClassifier, NoiseProfile, NoiseRouter

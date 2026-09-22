@@ -681,6 +681,10 @@ class ColorArtifactReducer:
         # Step 3: Fix unnatural magenta/purple casts with soft feathered face protection
         if enable_color_cast_fix:
             result = ColorArtifactReducer.fix_color_cast(result, strength=0.40, context=context)
+            # Step 3b: whole-image cast neutralization (salvaged from Enhancer,
+            # D17/T-7) — removes DDColor's subtle global hue bias while
+            # preserving naturally warm portraits via the |avg-128| <= 10 skip.
+            result = ColorArtifactReducer.neutralize_global_cast(result, strength=0.6, context=context)
             
         # Step 4: Multi-face landmark-guided skin tone protection
         if enable_skin_protection:
@@ -750,6 +754,46 @@ class ColorArtifactReducer:
                 lab[:, :, 2] = np.clip(B, 0, 255)
         
         return cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
+
+    @staticmethod
+    def neutralize_global_cast(img: np.ndarray,
+                               strength: float = 0.7,
+                               context: Optional[PipelineContext] = None) -> np.ndarray:
+        """Neutralise a whole-image color cast in LAB space.
+
+        Salvaged from the deleted `Enhancer.correct_color_cast` (D17) so the
+        logic survives for T-7 channel-curve rebalancing. Complements
+        `fix_color_cast`, which only clips extreme *local* casts: this removes
+        a global hue bias (e.g. DDColor's warm shift) with luminance-weighted
+        partial correction, and skips silently when the average is within the
+        natural warm-portrait range (|avg - 128| <= 10 on a or b).
+        """
+        lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB).astype(np.float32)
+        avg_a = float(np.mean(lab[:, :, 1]))
+        avg_b = float(np.mean(lab[:, :, 2]))
+
+        cast_a = avg_a - 128.0
+        cast_b = avg_b - 128.0
+
+        # Skip correction if cast is within natural warm-portrait range
+        if abs(cast_a) <= 10.0 and abs(cast_b) <= 10.0:
+            return img
+
+        # Partial correction (not full removal — preserves warmth)
+        L_norm = lab[:, :, 0] / 255.0
+        lab[:, :, 1] -= cast_a * L_norm * strength
+        lab[:, :, 2] -= cast_b * L_norm * strength
+
+        if context:
+            context.add_log(
+                f"ColorArtifactReducer: global cast neutralization "
+                f"(a={cast_a:+.1f}, b={cast_b:+.1f}, strength={strength:.2f})"
+            )
+
+        return cv2.cvtColor(
+            np.clip(lab, 0, 255).astype(np.uint8),
+            cv2.COLOR_LAB2RGB,
+        )
 
 
 class GradientPreservingSmoother:

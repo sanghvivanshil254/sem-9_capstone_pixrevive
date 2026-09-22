@@ -64,8 +64,9 @@ class PipelineContext:
         Stages that change resolution (super-resolution, the 2K resize fallback)
         leave every mask, face bbox, and landmark array at the pre-resize scale.
         Downstream stages combine those masks with working_image pixel-for-pixel,
-        so the mismatch raises a broadcast error (Enhancer) or is silently swallowed
-        (Harmonizer). Call this immediately after any stage that resizes working_image.
+        so the mismatch either raises a broadcast error in a mask-combining stage
+        or is silently swallowed (Harmonizer). Call this immediately after any
+        stage that resizes working_image.
         """
         h, w = self.working_image.shape[:2]
 
