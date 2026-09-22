@@ -9,7 +9,7 @@ const STAGES = [
   { id: 'despeckle',             at: 3,  label: 'Suppressing speckle' },
   { id: 'analyze',               at: 5,  label: 'Analyzing image' },
   { id: 'face_detect',           at: 12, label: 'Detecting faces' },
-  { id: 'detect',                at: 18, label: 'Detecting damage' },
+  { id: 'damage_detect',         at: 20, label: 'Detecting damage' },
   { id: 'refine_mask',           at: 28, label: 'Refining damage mask' },
   { id: 'inpaint',               at: 35, label: 'Inpainting damage' },
   { id: 'damage_cluster_smooth', at: 38, label: 'Smoothing damage clusters' },

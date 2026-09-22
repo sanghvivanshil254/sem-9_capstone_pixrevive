@@ -23,7 +23,7 @@ API = "http://127.0.0.1:8000/api"
 # Must stay in sync with STAGES + EDGE_LABELS in
 # frontend/src/components/ProgressBar.jsx.
 KNOWN_STAGES = {
-    "loading", "analyze", "face_detect", "despeckle", "detect", "denoise", "damage_cluster_smooth",
+    "loading", "analyze", "face_detect", "despeckle", "detect", "damage_detect", "denoise", "damage_cluster_smooth",
     "refine_mask", "inpaint", "face_restore", "smart_denoise", "colorize", "color_refine",
     "pre_sr", "super_res", "upscale", "harmonize", "sharpen", "enhance", "projector_grade",
     "final_refine", "identity_check", "validate", "encode", "complete", "done",

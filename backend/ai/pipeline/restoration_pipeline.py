@@ -16,12 +16,8 @@ to `debug_output/` sequentially:
 04_after_face_detect.png           — After Stage 4 RetinaFace Face Detection
 04b_before_denoise.png             — Working image immediately prior to Stage 5 Spatially-Gated Denoising
 05_after_denoise.png               — After Stage 5 Spatially-Gated 3-Zone Denoising
-05_before_hair_refine.png          — Working image immediately prior to Stage 5b Hair Zone Refinement
-05b_after_hair_refine.png          — After Stage 5b Hair Zone Bilateral Refinement & Warm Brown Enrichment
 05c_before_colorize.png            — Working image immediately prior to Stage 6 DDColor Colorization
 06_after_colorize.png              — After Stage 6 DDColor Colorization
-06_before_skin_enforce.png         — Working image immediately prior to Stage 6b Skin Tone Enforcement
-06b_after_skin_enforce.png         — After Stage 6b Face Skin Tone Enforcement
 06c_before_face_restore.png        — Working image immediately prior to Stage 7 GFPGAN Face Restoration
 07_after_face_restore.png          — After Stage 7 GFPGAN Face Restoration
 07b_before_pre_sr.png              — Working image immediately prior to Stage 8 Pre-SR Anti-Aliasing
@@ -67,7 +63,7 @@ from ai.restoration.inpainting_engine import InpaintingEngine
 from ai.restoration.face_restorer import FaceRestorer
 from ai.colorization.ddcolor_colorizer import DDColorColorizer
 from ai.colorization.color_refiner import ColorArtifactReducer
-from ai.restoration.super_resolution import SuperResolution, _realesrgan_tile_forward
+from ai.restoration.super_resolution import SuperResolution
 from ai.postprocessing.enhancer import Harmonizer
 from ai.pipeline.debug_logger import DebugLogger
 

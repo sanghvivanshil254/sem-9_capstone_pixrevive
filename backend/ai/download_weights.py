@@ -5,12 +5,11 @@ download_weights.py - Download all PixRevive AI model weights.
 Downloads (all to backend/ai/weights/ as the single canonical location):
   1. GFPGANv1.4          — face restoration        (~349 MB)
   2. RealESRGAN x4plus   — super-resolution         ( ~67 MB)
-  3. realesr-general-x4v3 — light SR fallback        (  ~5 MB)
-  4. big-lama             — LaMa inpainting          (~196 MB)
-  5. CodeFormer           — alternate face restorer  (~377 MB)
-  6. detection_Resnet50   — face detector (facelib)  (~109 MB)
-  7. parsing_parsenet     — face parser  (facelib)   ( ~85 MB)
-  8. DDColor              — transformer colorization (~870 MB)
+  3. big-lama             — LaMa inpainting          (~196 MB)
+  4. CodeFormer           — alternate face restorer  (~377 MB)
+  5. detection_Resnet50   — face detector (facelib)  (~109 MB)
+  6. parsing_parsenet     — face parser  (facelib)   ( ~85 MB)
+  7. DDColor              — transformer colorization (~870 MB)
 
 Note: DDColor also needs its inference sources vendored, which this script does
 not do. Run the dedicated installer instead — it fetches the sources, downloads
@@ -51,11 +50,6 @@ DOWNLOADS = [
     (
         "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth",
         "RealESRGAN_x4plus.pth",
-        None,
-    ),
-    (
-        "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth",
-        "realesr-general-x4v3.pth",
         None,
     ),
     (
