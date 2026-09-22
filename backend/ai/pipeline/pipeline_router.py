@@ -100,9 +100,12 @@ class PipelineRouter:
         """
         Analyze image metadata and return a route plan dict.
 
-        The pipeline uses the returned dict to decide which stages to execute.
-        The route is logged but never prevents the user from overriding via
-        explicit enable_* flags — those take priority in the pipeline logic.
+        Authority contract (Q-1): the returned run_* flags are consumed by
+        restore() and ANDed with the user's enable_* flags — a stage runs only
+        when BOTH the route and the user allow it. The route can therefore
+        narrow the pipeline on clean images (skip LaMa/GFPGAN) but can never
+        override an explicit user opt-out. Stage-internal refinements (e.g.
+        Stage 8's noise gate) remain in their stage bodies.
         """
         meta = context.image_metadata
         damage_pct     = float(meta.get("damage_percentage", 0.0))
@@ -114,13 +117,16 @@ class PipelineRouter:
         is_blurry      = blur_score < 200.0
         has_damage     = has_flakes or damage_pct >= 5.0
         heavy_damage   = damage_pct >= 20.0
+        dark_spots     = float(meta.get("dark_spot_percentage", 0.0))
 
         # Route selection logic
         if color_type in ("grayscale", "sepia"):
             # Damaged B&W/sepia photos MUST repair scratches before colorization.
             # Routing them straight to BW_RESTORE skips damage repair and causes
-            # DDColor to colorize bright scratch pixels with wrong hues.
-            if heavy_damage or has_damage:
+            # DDColor to colorize bright scratch pixels with wrong hues. Dark-spot
+            # evidence (foxing/mold stipple) escalates too: a spotted print can
+            # sit under the %-thresholds while the repair is still wanted.
+            if heavy_damage or has_damage or dark_spots >= 0.05:
                 route = _ROUTES["DAMAGED_FACE"].copy()
                 route["description"] = "Damaged B&W — repair scratches first, then restore"
             else:

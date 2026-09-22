@@ -16,6 +16,7 @@ Checks:
 """
 
 import logging
+import time
 
 import cv2
 import numpy as np
@@ -25,6 +26,34 @@ logger = logging.getLogger(__name__)
 
 
 class QualityService:
+
+    @staticmethod
+    def compute_metrics(context: PipelineContext) -> dict:
+        """Reference-free perceptual metrics on the final canvas (Q-6/D6).
+
+        Called at pipeline end behind PIXREVIVE_DEBUG=1. NIQE (naturalness,
+        lower = better) is computed on the working image and on the original
+        input — on a healthy run the output score should be no worse than the
+        input's beyond a tolerance. Timing/PSNR-style metrics need ground
+        truth this pipeline doesn't have; scripts/benchmark_quality.py owns
+        the full per-case report instead. Metrics are stored into context
+        metadata and never raise.
+        """
+        started = time.time()
+        metrics: dict = {}
+        try:
+            from ai.analysis.niqe_metric import niqe_score
+
+            out = niqe_score(context.working_image)
+            metrics["output_niqe"] = out
+            metrics["input_niqe"] = context.image_metadata.get("niqe_score")
+            if out is not None:
+                context.image_metadata["output_niqe"] = out
+                context.add_log(f"Quality metrics: output NIQE={out:.2f}.")
+        except Exception as exc:
+            metrics["error"] = str(exc)
+        metrics["compute_ms"] = round((time.time() - started) * 1000.0, 1)
+        return metrics
 
     @staticmethod
     def validate(context: PipelineContext) -> bool:

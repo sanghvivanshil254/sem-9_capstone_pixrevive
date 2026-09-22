@@ -139,22 +139,51 @@ class PreprocessStagesMixin:
 
             damage_zone = (local_variance > 35.0).astype(np.float32)
 
-            # Continuous feathered face safe zone
+            # Continuous feathered face safe zone (U-6).
+            # With landmarks available the safe zone is the convex hull of the
+            # 5-point facial set, dilated to anatomical scale — it hugs the
+            # actual face instead of the frame center. The legacy center
+            # rectangle survives ONLY as the no-face fallback: a center rect
+            # on an off-center portrait used to blind exactly the zone where
+            # the damage clusters were.
             safe_mask = np.zeros((h_img, w_img), dtype=np.float32)
-            cy, cx = h_img // 2, w_img // 2
-            safe_y0 = int(cy - 0.25 * h_img)
-            safe_y1 = int(cy + 0.25 * h_img)
-            safe_x0 = int(cx - 0.25 * w_img)
-            safe_x1 = int(cx + 0.25 * w_img)
-            safe_mask[max(0, safe_y0):min(h_img, safe_y1), max(0, safe_x0):min(w_img, safe_x1)] = 1.0
 
             faces = context.image_metadata.get("faces", [])
-            if faces:
-                for f in faces:
+            hull_points = []
+            face_span = 0.0
+            bbox_rects = []
+            for f in faces:
+                lm = f.get("landmarks")
+                if lm:
+                    hull_points.extend([(int(px), int(py)) for px, py in lm])
+                    pts = np.asarray(lm, dtype=np.float32)
+                    face_span = max(face_span, float(np.ptp(pts[:, 0])), float(np.ptp(pts[:, 1])))
+                else:
                     bbox = f.get("bbox")
                     if bbox and len(bbox) >= 4:
-                        x0, y0, x1, y1 = [int(v) for v in bbox[:4]]
-                        safe_mask[max(0, y0):min(h_img, y1), max(0, x0):min(w_img, x1)] = 1.0
+                        bbox_rects.append([int(v) for v in bbox[:4]])
+
+            if hull_points:
+                hull = cv2.convexHull(np.array(hull_points, dtype=np.int32))
+                cv2.fillConvexPoly(safe_mask, hull, 1.0)
+                # Eyes/nose/mouth sit inside the 5-point hull, but forehead,
+                # cheeks and chin extend well beyond it — dilate by ~0.6× the
+                # landmark spread so the whole anatomical region is protected.
+                grow = max(9, int(0.6 * face_span) | 1)
+                kernel_grow = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (grow, grow))
+                safe_u8 = (safe_mask * 255.0).astype(np.uint8)
+                safe_u8 = cv2.dilate(safe_u8, kernel_grow)
+                safe_mask = safe_u8.astype(np.float32) / 255.0
+            elif bbox_rects:
+                for x0, y0, x1, y1 in bbox_rects:
+                    safe_mask[max(0, y0):min(h_img, y1), max(0, x0):min(w_img, x1)] = 1.0
+            else:
+                cy, cx = h_img // 2, w_img // 2
+                safe_y0 = int(cy - 0.25 * h_img)
+                safe_y1 = int(cy + 0.25 * h_img)
+                safe_x0 = int(cx - 0.25 * w_img)
+                safe_x1 = int(cx + 0.25 * w_img)
+                safe_mask[max(0, safe_y0):min(h_img, safe_y1), max(0, safe_x0):min(w_img, safe_x1)] = 1.0
 
             safe_mask = cv2.GaussianBlur(safe_mask, (25, 25), 0)
             damage_zone = damage_zone * (1.0 - np.clip(safe_mask, 0.0, 1.0))

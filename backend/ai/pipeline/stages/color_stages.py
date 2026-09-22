@@ -21,7 +21,56 @@ from ai.colorization.color_refiner import ColorArtifactReducer
 from ai.postprocessing.enhancer import Harmonizer
 
 
+# Q-3 hallucination-rollback thresholds.
+_SINGLE_HUE_SAT_THRESHOLD = 0.88   # fraction of sampled pixels within one 15° hue bin
+_MIN_SATURATION_FRACTION = 0.10    # below this mean saturation the wash can't be "vivid"
+_MIN_PIX_COUNT = 1000              # skip the guard on tiny canvases (noise-dominated)
+
+
 class ColorStagesMixin:
+    @staticmethod
+    def _detect_colorization_hallucination(rgb: np.ndarray) -> bool:
+        """Q-3: pathological single-hue wash detector (>88% within one hue bin).
+
+        Mirrors the guard documented for the legacy ECCV16 colorizer: when
+        DDColor hallucinates one dominant color, nearly every sufficiently
+        saturated pixel lands in a single 15° hue bin. The saturation floor
+        keeps genuinely monochromatic content (an overcast sky, a red curtain
+        filling the frame) from tripping the guard on low-chroma images.
+        """
+        try:
+            if rgb.ndim != 3 or rgb.shape[0] * rgb.shape[1] < _MIN_PIX_COUNT:
+                return False
+            hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+            sat = hsv[:, :, 1].astype(np.float32)
+            if float(np.mean(sat)) < _MIN_SATURATION_FRACTION * 255.0:
+                return False
+            vivid = sat > 40
+            if not np.any(vivid):
+                return False
+            hues = hsv[:, :, 0][vivid].astype(np.int32)
+            counts = np.bincount(hues // 15, minlength=12)
+            dominant = int(counts.max()) / float(hues.size)
+            return dominant > _SINGLE_HUE_SAT_THRESHOLD
+        except Exception:
+            return False
+
+    @staticmethod
+    def _rollback_to_l_preserved_grayscale(context: PipelineContext, pre_color: np.ndarray) -> None:
+        """Q-3 fallback: revert to the pre-colorization canvas with a warning.
+
+        The working canvas before Stage 6 is grayscale-identity in L, so
+        restoring it preserves the luminance DDColor was supposed to keep
+        while discarding the hallucinated chroma entirely.
+        """
+        context.working_image = pre_color.copy()
+        context.image_metadata["colorization_rolled_back"] = True
+        context.add_log(
+            "Stage 6 Colorization: pathological single-hue wash detected — "
+            "rolled back to luminance-preserved grayscale. Colors are not "
+            "trustworthy for this input."
+        )
+
     def _stage_6_colorization(self, context: PipelineContext, on_progress: Optional[Callable]) -> None:
         """Stage 6: DDColor Colorization with Guided Chrominance Diffusion."""
         color_type = context.image_metadata.get("color_type", "color")
@@ -35,12 +84,26 @@ class ColorStagesMixin:
             on_progress("colorize", 65, "Colorizing with DDColor (ICCV 2023)...")
         context.start_timer("colorization")
 
+        pre_colorization_canvas = context.working_image.copy()
         try:
             if not self._colorizer_ready.is_set():
                 self._colorizer_ready.wait(timeout=60.0)
             if self.colorizer.is_loaded:
                 self.colorizer.colorize(context)
                 context.add_log("Stage 6 Colorization: DDColor completed.")
+
+                # ── Q-3 hallucination rollback guard ────────────────────────
+                # A pathological single-hue wash means DDColor invented chroma
+                # wholesale; the luminance-preserving pre-colorization canvas
+                # is strictly more honest. Runs before any chroma diffusion so
+                # downstream stages never refine a hallucinated wash.
+                if self._detect_colorization_hallucination(context.working_image):
+                    self._rollback_to_l_preserved_grayscale(
+                        context, pre_colorization_canvas
+                    )
+                    context.end_timer("colorization")
+                    DebugLogger.save_stage(context, "06_after_colorize")
+                    return
 
                 # ── Seamless chrominance propagation in inpainted tear/crack zones ──
                 # DDColor can hallucinate vivid or inconsistent chromatic tones inside

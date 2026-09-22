@@ -1,0 +1,311 @@
+{
+  "timestamp": "2026-09-22T19:25:55+00:00",
+  "cases": {
+    "case10_spiderweb_lips": {
+      "input": {
+        "damage_percentage": 1.977,
+        "dark_spot_percentage": 0.43,
+        "noise_score": 2.379,
+        "blur_score": 212.6,
+        "color_type": "sepia",
+        "niqe": 4.751
+      },
+      "output": {
+        "niqe": 6.263,
+        "ssim_vs_input": 0.7064,
+        "size": [
+          1527,
+          2048
+        ]
+      }
+    },
+    "case11_minor_creases": {
+      "input": {
+        "damage_percentage": 1.373,
+        "dark_spot_percentage": 0.296,
+        "noise_score": 2.041,
+        "blur_score": 180.0,
+        "color_type": "grayscale",
+        "niqe": 5.619
+      },
+      "output": {
+        "niqe": 5.406,
+        "ssim_vs_input": 0.8023,
+        "size": [
+          2048,
+          1365
+        ]
+      }
+    },
+    "case12_foxing_spots": {
+      "input": {
+        "damage_percentage": 0.305,
+        "dark_spot_percentage": 0.305,
+        "noise_score": 1.825,
+        "blur_score": 686.7,
+        "color_type": "grayscale",
+        "niqe": 15.721
+      },
+      "output": {
+        "niqe": 11.788,
+        "ssim_vs_input": 0.8957,
+        "size": [
+          1260,
+          960
+        ]
+      }
+    },
+    "case1_lena": {
+      "input": {
+        "damage_percentage": 3.021,
+        "dark_spot_percentage": 0.679,
+        "noise_score": 3.75,
+        "blur_score": 589.0,
+        "color_type": "grayscale",
+        "niqe": 4.21
+      },
+      "output": {
+        "niqe": 3.586,
+        "ssim_vs_input": 0.3225,
+        "size": [
+          1305,
+          1026
+        ]
+      }
+    },
+    "case1_lena_cropped": {
+      "input": {
+        "damage_percentage": 1.817,
+        "dark_spot_percentage": 0.727,
+        "noise_score": 4.618,
+        "blur_score": 1019.9,
+        "color_type": "grayscale",
+        "niqe": 3.686
+      },
+      "output": {
+        "niqe": 3.462,
+        "ssim_vs_input": 0.7529,
+        "size": [
+          1320,
+          1032
+        ]
+      }
+    },
+    "case1_noisy_lena": {
+      "input": {
+        "damage_percentage": 2.813,
+        "dark_spot_percentage": 0.048,
+        "noise_score": 13.133,
+        "blur_score": 5962.3,
+        "color_type": "grayscale",
+        "niqe": 7.337
+      },
+      "output": {
+        "niqe": 5.205,
+        "ssim_vs_input": 0.5481,
+        "size": [
+          784,
+          592
+        ]
+      }
+    },
+    "case2_dead_tree_landscape": {
+      "input": {
+        "damage_percentage": 2.546,
+        "dark_spot_percentage": 0.831,
+        "noise_score": 14.667,
+        "blur_score": 8584.3,
+        "color_type": "grayscale",
+        "niqe": null
+      },
+      "output": {
+        "niqe": 2.875,
+        "ssim_vs_input": 0.6177,
+        "size": [
+          732,
+          692
+        ]
+      }
+    },
+    "case3_sepia_flaked_portrait": {
+      "input": {
+        "damage_percentage": 5.033,
+        "dark_spot_percentage": 0.277,
+        "noise_score": 14.441,
+        "blur_score": 6667.0,
+        "color_type": "sepia",
+        "niqe": 5.165
+      },
+      "output": {
+        "niqe": 6.393,
+        "ssim_vs_input": 0.2716,
+        "size": [
+          1341,
+          1341
+        ]
+      }
+    },
+    "case4_diagonal_tear_portrait": {
+      "input": {
+        "damage_percentage": 1.323,
+        "dark_spot_percentage": 0.287,
+        "noise_score": 2.042,
+        "blur_score": 179.2,
+        "color_type": "grayscale",
+        "niqe": 5.581
+      },
+      "output": {
+        "niqe": 5.438,
+        "ssim_vs_input": 0.8014,
+        "size": [
+          2048,
+          1365
+        ]
+      }
+    },
+    "case5_spiderweb_creases_portrait": {
+      "input": {
+        "damage_percentage": 1.98,
+        "dark_spot_percentage": 0.424,
+        "noise_score": 2.382,
+        "blur_score": 213.0,
+        "color_type": "sepia",
+        "niqe": 4.715
+      },
+      "output": {
+        "niqe": 6.09,
+        "ssim_vs_input": 0.7024,
+        "size": [
+          1527,
+          2048
+        ]
+      }
+    },
+    "case6_severe_3d_torn_photo": {
+      "input": {
+        "damage_percentage": 1.861,
+        "dark_spot_percentage": 0.228,
+        "noise_score": 3.257,
+        "blur_score": 333.5,
+        "color_type": "sepia",
+        "niqe": 5.541
+      },
+      "output": {
+        "niqe": 7.542,
+        "ssim_vs_input": 0.6879,
+        "size": [
+          2048,
+          1546
+        ]
+      }
+    },
+    "case7_lena": {
+      "input": {
+        "damage_percentage": 3.021,
+        "dark_spot_percentage": 0.679,
+        "noise_score": 3.75,
+        "blur_score": 589.0,
+        "color_type": "grayscale",
+        "niqe": 4.21
+      },
+      "output": {
+        "niqe": 3.584,
+        "ssim_vs_input": 0.3227,
+        "size": [
+          1305,
+          1026
+        ]
+      }
+    },
+    "case8_speckle_lena_margins": {
+      "input": {
+        "damage_percentage": 2.998,
+        "dark_spot_percentage": 0.676,
+        "noise_score": 3.759,
+        "blur_score": 589.9,
+        "color_type": "grayscale",
+        "niqe": 4.201
+      },
+      "output": {
+        "niqe": 3.539,
+        "ssim_vs_input": 0.3215,
+        "size": [
+          1305,
+          1026
+        ]
+      }
+    },
+    "case9_teared_sepia": {
+      "input": {
+        "damage_percentage": 5.046,
+        "dark_spot_percentage": 0.264,
+        "noise_score": 14.408,
+        "blur_score": 6644.5,
+        "color_type": "sepia",
+        "niqe": 5.106
+      },
+      "output": {
+        "niqe": 5.564,
+        "ssim_vs_input": 0.2875,
+        "size": [
+          1341,
+          1341
+        ]
+      }
+    },
+    "screenshot_portrait_1": {
+      "input": {
+        "damage_percentage": 0.885,
+        "dark_spot_percentage": 0.078,
+        "noise_score": 1.807,
+        "blur_score": 223.3,
+        "color_type": "sepia",
+        "niqe": 7.914
+      },
+      "output": {
+        "niqe": 7.981,
+        "ssim_vs_input": 0.8345,
+        "size": [
+          2048,
+          2048
+        ]
+      }
+    },
+    "screenshot_portrait_2": {
+      "input": {
+        "damage_percentage": 1.235,
+        "dark_spot_percentage": 0.183,
+        "noise_score": 3.896,
+        "blur_score": 469.6,
+        "color_type": "color",
+        "niqe": 4.694
+      },
+      "output": {
+        "niqe": 3.95,
+        "ssim_vs_input": 0.8864,
+        "size": [
+          2048,
+          1546
+        ]
+      }
+    },
+    "screenshot_portrait_3": {
+      "input": {
+        "damage_percentage": 0.885,
+        "dark_spot_percentage": 0.087,
+        "noise_score": 1.684,
+        "blur_score": 136.6,
+        "color_type": "color",
+        "niqe": 6.561
+      },
+      "output": {
+        "niqe": 7.296,
+        "ssim_vs_input": 0.8979,
+        "size": [
+          1526,
+          2048
+        ]
+      }
+    }
+  }
+}

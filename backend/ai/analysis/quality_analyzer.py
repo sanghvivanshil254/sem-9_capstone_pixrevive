@@ -261,6 +261,31 @@ class QualityAnalyzer:
             )
             damage_percentage = max(damage_percentage, sepia_flake_percentage)
 
+        # ── Foxing / mold dark-spot evidence (T-1) ──────────────────────────
+        # The bright-structure pass above is blind to dark blemishes (foxing,
+        # mold stipple, ink dots). Feeding dark-spot coverage into the damage
+        # signal keeps router authority (Q-1) from vetoing the foxing repair
+        # path on B&W prints, whose route dict must carry run_damage_repair.
+        # The spot detector self-thresholds on uniform speckle (its
+        # mean + 3.5σ gate), so the percentage is trustworthy; capped to bound
+        # pathological frames.
+        dark_spot_percentage = 0.0
+        try:
+            from types import SimpleNamespace
+
+            from ai.damage.enhanced_detector import EnhancedDamageDetector
+
+            _spots = EnhancedDamageDetector(use_defect_segmenter=False).detect_dark_spots(
+                image_np, SimpleNamespace(image_metadata={})
+            )
+            dark_spot_percentage = min(
+                float(np.sum(_spots > 0)) / (h * w) * 100.0, 15.0
+            )
+        except Exception:
+            dark_spot_percentage = 0.0
+        damage_percentage = max(damage_percentage, dark_spot_percentage
+        )
+
         # has_white_flakes: original gate (lowered from 5.0% to 2.0%)
         has_white_flakes = (
             sepia_flake_percentage >= 1.0 or damage_percentage > 2.0
@@ -278,6 +303,14 @@ class QualityAnalyzer:
         grain_field = bool(sigma_content > 6.0 and damage_percentage < 6.0)
         grain_field_confidence = round(min(1.0, sigma_content / 20.0), 3)
 
+        # ── Reference-free naturalness (NIQE) ──────────────────────────────
+        # Lower = more natural. Needs no ground truth, so it is the benchmark
+        # ruler (Q-6) for the restoration quality harness. Guarded completely —
+        # analysis must never raise.
+        from ai.analysis.niqe_metric import niqe_score
+
+        niqe_score_val = niqe_score(gray)
+
         return {
             "content_sigma":      sigma_content,
             "grain_field":        grain_field,
@@ -294,6 +327,8 @@ class QualityAnalyzer:
             "mean_saturation":   mean_saturation,
             "warm_ratio":        warm_ratio,
             "damage_percentage": damage_percentage,
+            "dark_spot_percentage": dark_spot_percentage,
+            "niqe_score":       niqe_score_val,
             "scratch_line_pct":  scratch_line_pct,
             "sepia_flake_percentage": sepia_flake_percentage,
             "has_white_flakes":  has_white_flakes,

@@ -273,11 +273,14 @@ class DamageStagesMixin:
         return boundary_zone
 
     def _seam_smooth(self, context: PipelineContext, mask: np.ndarray, faces: List[Dict[str, Any]]) -> None:
-        """Feathered Gaussian blend along inpaint mask boundaries.
+        """Edge-aware blend along inpaint mask boundaries (Q-4).
 
         Builds a dilate-minus-erode boundary band, carries out facial anatomy
-        via _protect_facial_anatomy, then blends a blurred copy through the
-        band so repaired regions do not end in hard edges.
+        protection via _protect_facial_anatomy, then blends an edge-preserving
+        filtered copy through the band so repaired regions do not end in hard
+        edges. The guided filter (Harmonizer's mechanism) replaces the old raw
+        Gaussian: it keeps real texture — fabric weave, brick, grain — intact
+        on the un-damaged side of the seam while still smoothing the fill.
         """
         k_erode = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
         boundary_zone = cv2.dilate(mask, k_erode) - cv2.erode(mask, k_erode)
@@ -286,10 +289,17 @@ class DamageStagesMixin:
 
         seam_f32 = boundary_zone.astype(np.float32) / 255.0
         seam_f32 = cv2.GaussianBlur(seam_f32, (9, 9), 0)[:, :, None]
-        blurred = cv2.GaussianBlur(context.working_image, (7, 7), 0)
+        try:
+            smoothed = cv2.ximgproc.guidedFilter(
+                guide=context.working_image, src=context.working_image,
+                radius=6, eps=20.0,
+            )
+        except Exception:
+            # ximgproc unavailable — historical raw-Gaussian behaviour.
+            smoothed = cv2.GaussianBlur(context.working_image, (7, 7), 0)
         context.working_image = np.clip(
             context.working_image.astype(np.float32) * (1.0 - seam_f32) +
-            blurred.astype(np.float32) * seam_f32, 0, 255
+            smoothed.astype(np.float32) * seam_f32, 0, 255
         ).astype(np.uint8)
         context.add_log("Stage 3 Inpainting: Seam boundary smoothing applied.")
 

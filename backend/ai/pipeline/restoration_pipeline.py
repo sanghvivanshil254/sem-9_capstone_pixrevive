@@ -174,6 +174,37 @@ class RestorationPipeline(
         """Return whether colorization should run based on user flag and image color type."""
         return enable_colorization and (color_type in ("grayscale", "sepia"))
 
+    @staticmethod
+    def _effective_stage_flags(
+        route: Dict[str, Any],
+        color_type: str,
+        *,
+        enable_repair: bool,
+        enable_denoise: bool,
+        enable_colorization: bool,
+        enable_face_restore: bool,
+        enable_sr: bool,
+    ) -> Dict[str, bool]:
+        """AND the router's run_* authority with the user's enable_* flags (Q-1).
+
+        A stage runs only when BOTH the route and the user allow it, so a clean
+        image's route narrows the pipeline while an explicit user opt-out always
+        wins. Colorization is the one carve-out: no route preset carries
+        run_colorization (it is meaningless on color images — Stage 6 self-skips
+        those), but the B&W/sepia restoration brief REQUIRES colorization to
+        follow the user toggle, so the route cannot veto it there.
+        """
+        _is_bw = color_type in ("grayscale", "sepia")
+        return {
+            "run_repair": enable_repair and bool(route.get("run_damage_repair", True)),
+            "run_denoise": enable_denoise and bool(route.get("run_denoising", True)),
+            "run_face": enable_face_restore and bool(route.get("run_face_restore", True)),
+            "run_colorize": enable_colorization and (
+                _is_bw or bool(route.get("run_colorization", True))
+            ),
+            "run_sr": enable_sr and bool(route.get("run_sr", True)),
+        }
+
     def health_status(self) -> Dict[str, Any]:
         """Per-model load truth: a boolean per model plus each failed loader's error.
 
@@ -381,23 +412,40 @@ class RestorationPipeline(
         # destructive inpainting of facial anatomy.
         faces = self._stage_4_face_detect(context, on_progress)
 
-        # -- PipelineRouter -- advisory routing logged for debugging --------------
+        # -- PipelineRouter — authority (Q-1) -------------------------------------
+        # The route's run_* flags are ANDed with the user's enable_* flags:
+        # a stage runs only when both allow it. On clean images the route
+        # narrows the pipeline (skip LaMa/GFPGAN); user opt-outs always win.
         route = self.router.route(context)
         context.add_log(
             f"PipelineRouter: '{route['pipeline_name']}' - {route['description']}"
         )
+        flags = self._effective_stage_flags(
+            route,
+            context.image_metadata.get("color_type", "color"),
+            enable_repair=enable_repair,
+            enable_denoise=enable_denoise,
+            enable_colorization=enable_colorization,
+            enable_face_restore=enable_face_restore,
+            enable_sr=enable_sr,
+        )
+        run_repair = flags["run_repair"]
+        run_denoise = flags["run_denoise"]
+        run_face = flags["run_face"]
+        run_colorize_flag = flags["run_colorize"]
+        run_sr = flags["run_sr"]
 
         # -- Stage 2: Multi-Scale Fracture Masking (returns the damage mask) -----
         damage_mask = np.zeros(img_rgb.shape[:2], dtype=np.uint8)
-        if enable_repair:
+        if run_repair:
             damage_mask = self._stage_2_fracture_masking(context, on_progress)
 
         # -- Stage 3: LaMa Deep Inpainting (needs the mask + canvas, not flags) --
-        if enable_repair and np.any(damage_mask > 0):
+        if run_repair and np.any(damage_mask > 0):
             self._stage_3_lama_inpaint(context, damage_mask, on_progress)
 
         # -- Stage 2b: High-Variance Damage Zone Smoother -------------------------
-        if enable_denoise:
+        if run_denoise:
             noise_score = float(context.image_metadata.get("noise_score", 0.0))
             inpaint_coverage = float(np.sum(damage_mask > 0) / max(damage_mask.size, 1) * 100) if damage_mask is not None else 0.0
             if noise_score > 3.0 and inpaint_coverage < 30.0:
@@ -439,9 +487,22 @@ class RestorationPipeline(
             if spec.id in _ran_inline:
                 continue
 
+            # Route authority (Q-1): registry gates read the ANDed flags.
             gate = spec.route_gate
-            if gate is not None and not context.pipeline_flags.get(gate, False):
-                continue
+            if gate is not None:
+                gate_value = {
+                    "enable_repair": run_repair,
+                    "enable_denoise": run_denoise,
+                    "enable_colorization": run_colorize_flag,
+                    "enable_face_restore": run_face,
+                    "enable_sr": run_sr,
+                }.get(gate, context.pipeline_flags.get(gate, False))
+                if not gate_value:
+                    context.add_log(
+                        f"PipelineRouter: stage '{spec.id}' skipped "
+                        f"(gate '{gate}' not granted by route+user flags)."
+                    )
+                    continue
 
             # Stage 8's original contract: bilateral anti-aliasing only on
             # noisy scans; quiet images keep their natural sharpness.
@@ -490,7 +551,7 @@ class RestorationPipeline(
                     context.add_log("Stage 9 post-SR: geometry synced to SR resolution.")
                 except Exception as exc:
                     context.add_log(f"Stage 9 sync_geometry failed: {exc}")
-                if enable_repair and np.any(context.damage_masks.get("final", np.zeros(1)) > 0):
+                if run_repair and np.any(context.damage_masks.get("final", np.zeros(1)) > 0):
                     try:
                         Harmonizer.harmonize(context)
                         context.add_log("Stage 9b Harmonizer: inpaint seam blending applied at SR resolution.")
@@ -498,7 +559,7 @@ class RestorationPipeline(
                         context.add_log(f"Stage 9b Harmonizer failed: {exc}")
 
         # -- Post-SR Deferred Face Restoration (9c) ------------------------------
-        if enable_face_restore and context.pipeline_flags.get("face_restore_deferred_to_post_sr", False):
+        if run_face and context.pipeline_flags.get("face_restore_deferred_to_post_sr", False):
             context.pipeline_flags["face_restore_deferred_to_post_sr"] = False
             context.pipeline_flags["_running_deferred_face_restore"] = True
             try:
@@ -509,6 +570,16 @@ class RestorationPipeline(
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+        # Output quality gate + (debug-only) perceptual metrics (Q-6).
+        try:
+            from ai.analysis.quality_service import QualityService
+
+            QualityService.validate(context)
+            if os.getenv("PIXREVIVE_DEBUG", "").strip() in ("1", "true", "True"):
+                QualityService.compute_metrics(context)
+        except Exception as exc:
+            logger.warning("QualityService post-check failed: %s", exc)
 
         DebugLogger.save_debug_images(context)
 
