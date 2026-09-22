@@ -18,16 +18,18 @@ import time
 
 import requests
 
+sys.path.insert(
+    0,
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend"),
+)
+from ai.pipeline.stage_registry import stage_ids  # noqa: E402
+
 API = "http://127.0.0.1:8000/api"
 
-# Must stay in sync with STAGES + EDGE_LABELS in
-# frontend/src/components/ProgressBar.jsx.
-KNOWN_STAGES = {
-    "loading", "analyze", "face_detect", "despeckle", "detect", "damage_detect", "denoise", "damage_cluster_smooth",
-    "refine_mask", "inpaint", "face_restore", "smart_denoise", "colorize", "color_refine",
-    "pre_sr", "super_res", "upscale", "harmonize", "sharpen", "enhance", "projector_grade",
-    "final_refine", "identity_check", "validate", "encode", "complete", "done",
-}
+# Derived from ai.pipeline.stage_registry — the same source the backend and
+# the frontend (via scripts/export_stage_list.py) use. A stage id the live
+# pipeline emits but the registry does not know is a contract break.
+KNOWN_STAGES = set(stage_ids())
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_IMAGE = os.path.join(ROOT, "test_artifacts", "sources", "teared.jpg")

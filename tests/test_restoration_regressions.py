@@ -161,6 +161,22 @@ class TestRestorationRegressions(unittest.TestCase):
     def test_tiny_source_sr_target_stays_at_model_scale(self):
         self.assertEqual(_target_long_side_for_source(196), 784)
 
+    def test_sr_fallback_respects_2k_target_for_3000px_source(self):
+        """Q-5: with the model unavailable, the fallback resamples a 3000px
+        source to the 2K target (2048 long side) instead of blindly x4-ing
+        it to 12000px."""
+        from ai.restoration import super_resolution as sr_mod
+
+        img = np.zeros((2250, 3000, 3), dtype=np.uint8)  # 4:3, long side 3000
+        sr = sr_mod.SuperResolution()  # is_loaded=False -> fallback path
+        self.assertFalse(sr.is_loaded)
+
+        ctx = PipelineContext(img, {"color_type": "color"})
+        out = sr.restore(ctx)
+
+        self.assertEqual(max(out.shape[:2]), sr_mod._2K_LONG_SIDE)
+        self.assertEqual(max(ctx.working_image.shape[:2]), sr_mod._2K_LONG_SIDE)
+
     def test_noise_router_declares_all_requested_noise_types(self):
         expected = {
             "gaussian",

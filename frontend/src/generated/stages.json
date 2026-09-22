@@ -1,0 +1,150 @@
+{
+  "stages": [
+    {
+      "id": "despeckle",
+      "name": "Impulse & speck suppression",
+      "method": "_stage_0_despeckle",
+      "progress_pct": 3,
+      "progress_message": "Suppressing impulse noise and specks...",
+      "debug_snapshot": "00b_after_despeckle",
+      "route_gate": null
+    },
+    {
+      "id": "analyze",
+      "name": "Degradation analysis",
+      "method": "_stage_1_analyze",
+      "progress_pct": 10,
+      "progress_message": "Analyzing image degradation profile...",
+      "debug_snapshot": "01_after_analyze",
+      "route_gate": null
+    },
+    {
+      "id": "face_detect",
+      "name": "Early face & landmark detection",
+      "method": "_stage_4_face_detect",
+      "progress_pct": 12,
+      "progress_message": "Detecting faces and facial landmarks...",
+      "debug_snapshot": "04_after_face_detect",
+      "route_gate": null
+    },
+    {
+      "id": "damage_detect",
+      "name": "Multi-scale fracture masking",
+      "method": "_stage_2_fracture_masking",
+      "progress_pct": 20,
+      "progress_message": "Detecting fractures and structural tears...",
+      "debug_snapshot": "02_after_damage_detect",
+      "route_gate": "enable_repair"
+    },
+    {
+      "id": "inpaint",
+      "name": "LaMa deep inpainting",
+      "method": "_stage_3_lama_inpaint",
+      "progress_pct": 30,
+      "progress_message": "Inpainting structural damage with LaMa...",
+      "debug_snapshot": "03_after_inpaint",
+      "route_gate": "enable_repair"
+    },
+    {
+      "id": "damage_cluster_smooth",
+      "name": "High-variance damage cluster smoothing",
+      "method": "_stage_2b_damage_cluster_smooth",
+      "progress_pct": 35,
+      "progress_message": "Smoothing high-variance damage clusters...",
+      "debug_snapshot": "02b_after_damage_cluster_smooth",
+      "route_gate": null
+    },
+    {
+      "id": "denoise",
+      "name": "Spatially-gated 3-zone denoising",
+      "method": "_stage_5_spatially_gated_denoise",
+      "progress_pct": 50,
+      "progress_message": "Applying spatially-gated 3-zone denoising...",
+      "debug_snapshot": "05_after_denoise",
+      "route_gate": "enable_denoise"
+    },
+    {
+      "id": "colorize",
+      "name": "DDColor colorization",
+      "method": "_stage_6_colorization",
+      "progress_pct": 65,
+      "progress_message": "Colorizing with DDColor (ICCV 2023)...",
+      "debug_snapshot": "06_after_colorize",
+      "route_gate": "enable_colorization"
+    },
+    {
+      "id": "face_restore",
+      "name": "GFPGAN face restoration",
+      "method": "_stage_7_face_restoration",
+      "progress_pct": 78,
+      "progress_message": "Restoring facial details with GFPGAN...",
+      "debug_snapshot": "07_after_face_restore",
+      "route_gate": "enable_face_restore"
+    },
+    {
+      "id": "pre_sr",
+      "name": "Pre-SR anti-aliasing",
+      "method": "_stage_8_presr_antialiasing",
+      "progress_pct": 85,
+      "progress_message": "Applying pre-SR anti-aliasing filter...",
+      "debug_snapshot": "08_after_pre_sr",
+      "route_gate": "enable_sr"
+    },
+    {
+      "id": "super_res",
+      "name": "Real-ESRGAN super-resolution",
+      "method": "_stage_9_super_resolution",
+      "progress_pct": 90,
+      "progress_message": "Upscaling with Real-ESRGAN via SuperResolution.restore()...",
+      "debug_snapshot": "09_after_super_res",
+      "route_gate": "enable_sr"
+    },
+    {
+      "id": "sharpen",
+      "name": "Post-SR luminance sharpening",
+      "method": "_stage_10_post_sr_sharpen",
+      "progress_pct": 95,
+      "progress_message": "Enhancing internal borders and contours...",
+      "debug_snapshot": "10_after_sharpen",
+      "route_gate": "enable_sr"
+    },
+    {
+      "id": "projector_grade",
+      "name": "Projector exhibition grading",
+      "method": "_stage_10b_projector_grade",
+      "progress_pct": 98,
+      "progress_message": "Applying projector exhibition grading...",
+      "debug_snapshot": "10b_after_projector_grade",
+      "route_gate": null
+    }
+  ],
+  "edge_events": [
+    {
+      "id": "loading",
+      "name": "Loading AI models",
+      "method": null,
+      "progress_pct": 0,
+      "progress_message": "",
+      "debug_snapshot": null,
+      "route_gate": null
+    },
+    {
+      "id": "complete",
+      "name": "Complete",
+      "method": null,
+      "progress_pct": 100,
+      "progress_message": "",
+      "debug_snapshot": null,
+      "route_gate": null
+    },
+    {
+      "id": "done",
+      "name": "Complete",
+      "method": null,
+      "progress_pct": 100,
+      "progress_message": "",
+      "debug_snapshot": null,
+      "route_gate": null
+    }
+  ]
+}

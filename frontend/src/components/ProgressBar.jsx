@@ -1,43 +1,21 @@
 import { CheckCircle2, Loader2 } from 'lucide-react';
+import registry from '../generated/stages.json';
 
-// Ordered to match the emission order of `_emit(...)` in
-// backend/ai/pipeline/restoration_pipeline.py, with each stage's nominal
-// percentage. `at` is what lets the dots stay correct when a stage is skipped:
-// damage repair, colour refinement and the identity check are all conditional,
-// so their events never arrive for most images.
-const STAGES = [
-  { id: 'despeckle',             at: 3,  label: 'Suppressing speckle' },
-  { id: 'analyze',               at: 5,  label: 'Analyzing image' },
-  { id: 'face_detect',           at: 12, label: 'Detecting faces' },
-  { id: 'damage_detect',         at: 20, label: 'Detecting damage' },
-  { id: 'refine_mask',           at: 28, label: 'Refining damage mask' },
-  { id: 'inpaint',               at: 35, label: 'Inpainting damage' },
-  { id: 'damage_cluster_smooth', at: 38, label: 'Smoothing damage clusters' },
-  { id: 'denoise',               at: 50, label: 'Spatially-gated denoising' },
-  { id: 'smart_denoise',         at: 50, label: 'Denoising' },
-  { id: 'colorize',              at: 65, label: 'Colorizing (DDColor)' },
-  { id: 'color_refine',          at: 72, label: 'Reducing color artifacts' },
-  { id: 'face_restore',          at: 78, label: 'Restoring faces (GFPGAN)' },
-  { id: 'pre_sr',                at: 85, label: 'Pre-SR conditioning' },
-  { id: 'super_res',             at: 90, label: 'Upscaling (Real-ESRGAN)' },
-  { id: 'upscale',               at: 90, label: 'Upscaling' },
-  { id: 'harmonize',             at: 92, label: 'Harmonizing colors' },
-  { id: 'sharpen',               at: 95, label: 'Crispness calibration' },
-  { id: 'enhance',               at: 95, label: 'Enhancing image' },
-  { id: 'projector_grade',       at: 98, label: 'Projector display grading' },
-  { id: 'final_refine',          at: 98, label: 'Final color refinement' },
-  { id: 'identity_check',        at: 98, label: 'Identity check' },
-  { id: 'validate',              at: 99, label: 'Validating quality' },
-  { id: 'encode',                at: 99, label: 'Encoding output' },
-];
+// Single source of truth: backend/ai/pipeline/stage_registry.py, exported via
+// scripts/export_stage_list.py. `at` is each stage's nominal percentage — it
+// keeps the dots correct when conditional stages (repair, denoise,
+// colorization...) are skipped and their events never arrive.
+const STAGES = registry.stages.map((s) => ({
+  id: s.id,
+  at: s.progress_pct,
+  label: s.name,
+}));
 
-// Stages that exist but get no dot: `loading` happens before the pipeline
-// proper, `done`/`complete` is the terminal state (the dot row is hidden at 100%).
-const EDGE_LABELS = {
-  loading: 'Loading AI models',
-  complete: 'Complete',
-  done: 'Complete',
-};
+// Edge events exist but get no dot: `loading` happens before the pipeline
+// proper, `done`/`complete` are terminal (the dot row is hidden at 100%).
+const EDGE_LABELS = Object.fromEntries(
+  registry.edge_events.map((e) => [e.id, e.name]),
+);
 
 const labelFor = (stage) =>
   EDGE_LABELS[stage] || STAGES.find((s) => s.id === stage)?.label || 'Processing...';

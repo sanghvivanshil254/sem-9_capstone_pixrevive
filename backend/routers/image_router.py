@@ -323,7 +323,13 @@ async def get_result(task_id: str):
 
 @router.get("/process/{task_id}/status")
 async def get_status(task_id: str):
-    """Poll task status (non-SSE fallback for environments without SSE support)."""
+    """Poll task status (non-SSE fallback for environments without SSE support).
+
+    Every read is also a pruning opportunity (U-9): expired tasks are evicted
+    before the lookup, so polling clients keep temp_results/ bounded even if
+    no new tasks arrive.
+    """
+    _prune_old_tasks()
     with _tasks_lock:  # Fix 12: thread-safe read
         task = _tasks.get(task_id)
     if not task:

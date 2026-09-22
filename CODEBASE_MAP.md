@@ -27,7 +27,7 @@ flowchart TD
     S10 --> S10b["Stage 10b: Projector Exhibition Grade (CLAHE + Shadow S-Curve)"]
 ```
 
-| Stage | Method in `restoration_pipeline.py` | Responsible Module | Description |
+| Stage | Method (defined in `pipeline/stages/*` mixins) | Responsible Module | Description |
 |---|---|---|---|
 | **0** | `_stage_0_despeckle` | `ai.preprocessing.impulse_denoiser` + `speck_suppressor` | ROAD impulse filter for dust/pinholes + spatial autocorrelation speck field suppressor |
 | **1** | `_stage_1_analyze` | `ai.analysis.quality_analyzer` | Computes blur, grain, damage %, and color mode (`grayscale`, `sepia`, `color`) |
@@ -60,12 +60,17 @@ PixRevive/
 │   │
 │   ├── ai/
 │   │   ├── pipeline/
-│   │   │   ├── restoration_pipeline.py       # Full 14-stage restoration orchestrator (restore & process methods)
+│   │   │   ├── restoration_pipeline.py       # Thin orchestrator: restore() prelude + registry-driven dispatch (restore & process methods)
 │   │   │   │                                 #   Stage 2 also wires foxing/mold dark spots (T-1) into the damage mask
+│   │   │   ├── stage_registry.py             # Ordered StageSpec list — single source of truth for stage ids/methods/percentages/gates (A-2)
+│   │   │   ├── stages/                       # Stage bodies as mixins on RestorationPipeline:
+│   │   │   │   ├── preprocess_stages.py      #   0 despeckle, 1 analyze, 4 face detect
+│   │   │   │   ├── damage_stages.py          #   2 masking, 3 LaMa inpaint (+ seam/protect/breaker sub-steps), 2b cluster smooth, 3b face refresh
+│   │   │   │   ├── color_stages.py           #   5 denoise, 6 colorization, 7 face restoration
+│   │   │   │   └── finish_stages.py          #   8 pre-SR AA, 9 SR, 10 sharpen, 10b projector grade
 │   │   │   ├── pipeline_context.py           # State container: working_image, damage_masks, metadata, timers
 │   │   │   ├── pipeline_router.py            # Routing decisions based on image analysis (6 named routes + SAFE_FALLBACK)
-│   │   │   ├── debug_logger.py               # Debug stage snapshots saved to debug_output/
-│   │   │   └── (stage registry planned for Phase 3 — A-2)
+│   │   │   └── debug_logger.py               # Debug stage snapshots saved to debug_output/
 │   │   │
 │   │   ├── preprocessing/
 │   │   │   ├── impulse_denoiser.py           # ROAD-test discrete salt-and-pepper / dust outlier filter

@@ -76,3 +76,26 @@ class TestImageRouter(unittest.TestCase):
         with image_router._tasks_lock:
             self.assertNotIn(tid, image_router._tasks)
         self.assertFalse(os.path.exists(test_file))
+
+    def test_get_status_prunes_expired_tasks(self):
+        """U-9: every status read is a pruning opportunity — expired tasks are
+        evicted before the lookup and their result files deleted."""
+        tid = "test_status_prune_tid"
+        test_file = os.path.join(image_router._results_dir, f"{tid}.png")
+        with open(test_file, "wb") as f:
+            f.write(b"dummy png content")
+
+        with image_router._tasks_lock:
+            image_router._tasks[tid] = {
+                "status": "done",
+                "result_path": test_file,
+                "created_at": time.time() - 2000,  # Expired (>1800s)
+            }
+
+        # The read prunes first: expired task answers 404 and is gone.
+        response = self.client.get(f"/api/process/{tid}/status")
+        self.assertEqual(response.status_code, 404)
+
+        with image_router._tasks_lock:
+            self.assertNotIn(tid, image_router._tasks)
+        self.assertFalse(os.path.exists(test_file))
