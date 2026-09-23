@@ -447,10 +447,26 @@ class RestorationPipeline(
         DebugLogger.save_stage(context, "00_input_raw")
 
         # -- Stage 0: Impulse / Speck Suppression --------------------------------
-        # Ungated stages (despeckle, analyze, face detect) are called directly:
-        # restore() threads their outputs (faces, route, damage mask) through
-        # inline orchestration the registry cannot express.
+        # Ungated stages (despeckle, moire, analyze, face detect) are called
+        # directly: restore() threads their outputs (faces, route, damage mask)
+        # through inline orchestration the registry cannot express.
         self._stage_0_despeckle(context, on_progress)
+
+        # -- T-9: Moiré / halftone suppression (registry stage 'moire') ---------
+        # The Phase 1 salvage: HalftoneSuppressor's FFT spectral-peak detector
+        # + Gaussian notch rejection, self-gating (fires only on genuine
+        # periodic mesh; probe-verified inert on all 17 real dataset photos
+        # including the macro-edge-heavy case2 landscape, and its MAE safety
+        # valve rejects drastic false positives). Runs before analysis so the
+        # damage detectors and colorizer see the mesh as suppressed texture
+        # rather than content.
+        try:
+            if on_progress:
+                on_progress("moire", 4, "Suppressing halftone and moiré patterns...")
+            moire_img = HalftoneSuppressor.suppress(context)
+            context.working_image = moire_img
+        except Exception as exc:
+            logger.warning("T-9 moiré suppression failed, keeping input: %s", exc)
 
         # -- Stage 1: Degradation Analysis ---------------------------------------
         self._stage_1_analyze(context, on_progress)

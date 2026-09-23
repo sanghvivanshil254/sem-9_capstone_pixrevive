@@ -28,6 +28,15 @@
       "route_gate": null
     },
     {
+      "id": "moire",
+      "name": "Moir\u00e9 & halftone suppression",
+      "method": null,
+      "progress_pct": 4,
+      "progress_message": "Suppressing halftone and moir\u00e9 patterns...",
+      "debug_snapshot": null,
+      "route_gate": null
+    },
+    {
       "id": "analyze",
       "name": "Degradation analysis",
       "method": "_stage_1_analyze",

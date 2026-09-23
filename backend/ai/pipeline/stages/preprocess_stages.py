@@ -22,6 +22,7 @@ from ai.restoration.inpainting_engine import InpaintingEngine
 from ai.restoration.super_resolution import SuperResolution
 from ai.colorization.color_refiner import ColorArtifactReducer
 from ai.postprocessing.enhancer import Harmonizer
+from ai.preprocessing.halftone_suppressor import HalftoneSuppressor
 
 logger = logging.getLogger(__name__)
 

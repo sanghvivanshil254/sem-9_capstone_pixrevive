@@ -94,6 +94,20 @@ STAGE_REGISTRY: List[StageSpec] = [
         debug_snapshot="00b_after_despeckle",
     ),
     StageSpec(
+        # T-9 moire: the Phase 1 salvage (D5) — HalftoneSuppressor's FFT notch
+        # wired as the moire specialist, ahead of the SR bilateral pre-filter.
+        # Runs inline right after despeckle (before analysis): a periodic mesh
+        # is texture, not damage, and every downstream detector + the colorizer
+        # misread it as content. Self-gating (FFT spectral peaks + MAE safety
+        # valve); probe-verified inert on all 17 real dataset photos including
+        # the macro-edge-heavy case2 landscape.
+        id="moire",
+        name="Moiré & halftone suppression",
+        method=None,  # inlined in restore() after despeckle (pre-context)
+        progress_pct=4,
+        progress_message="Suppressing halftone and moiré patterns...",
+    ),
+    StageSpec(
         id="analyze",
         name="Degradation analysis",
         method="_stage_1_analyze",
