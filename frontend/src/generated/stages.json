@@ -46,6 +46,15 @@
       "route_gate": null
     },
     {
+      "id": "cast_fix",
+      "name": "Dye-fade color-cast rebalancing",
+      "method": null,
+      "progress_pct": 11,
+      "progress_message": "Rebalancing faded print colors...",
+      "debug_snapshot": null,
+      "route_gate": null
+    },
+    {
       "id": "face_detect",
       "name": "Early face & landmark detection",
       "method": "_stage_4_face_detect",

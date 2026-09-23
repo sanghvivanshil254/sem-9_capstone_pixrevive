@@ -116,6 +116,19 @@ STAGE_REGISTRY: List[StageSpec] = [
         debug_snapshot="01_after_analyze",
     ),
     StageSpec(
+        # T-7 dye-fade rebalance: input-side gray-world/channel-curve cast fix
+        # for COLOR-classified prints, using the logic salvaged from the
+        # deleted Enhancer (D17 -> ColorArtifactReducer). Runs after analysis
+        # (needs color_type) and before routing/detection: sepia tone is
+        # historic character and is excluded BY TYPE — documented
+        # false-negative, the safe direction.
+        id="cast_fix",
+        name="Dye-fade color-cast rebalancing",
+        method=None,  # inlined in restore() after analysis (needs color_type)
+        progress_pct=11,
+        progress_message="Rebalancing faded print colors...",
+    ),
+    StageSpec(
         id="face_detect",
         name="Early face & landmark detection",
         method="_stage_4_face_detect",
@@ -197,6 +210,9 @@ STAGE_REGISTRY: List[StageSpec] = [
         name="Pre-SR anti-aliasing",
         method="_stage_8_presr_antialiasing",
         progress_pct=85,
+        # T-6 deband runs inside _stage_8_presr_antialiasing (gated on the
+        # noise router's banding score) — the SR step amplifies whatever
+        # quantization stairs survive, so pre-SR is the last cheap exit.
         progress_message="Applying pre-SR anti-aliasing filter...",
         debug_snapshot="08_after_pre_sr",
         route_gate="enable_sr",

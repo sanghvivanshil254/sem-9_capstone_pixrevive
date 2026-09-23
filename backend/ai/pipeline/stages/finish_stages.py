@@ -267,6 +267,24 @@ class FinishStagesMixin:
             lab_clean = cv2.merge([l_smooth, a_smooth, b_smooth])
             context.working_image = cv2.cvtColor(lab_clean, cv2.COLOR_LAB2RGB)
             context.add_log(f"Stage 8 Pre-SR Anti-Aliasing: Bilateral filter applied (sigmaColor={sigma_c:.1f}).")
+
+            # -- T-6: Banding pass (registry stage 'deband') -----------------
+            # Plan T-6: dedicated bit-depth-expansion + dithering pass applied
+            # pre-SR when banding_score is high. Gated on the noise router's
+            # banding measurement (corpus max 0.503; gate 0.6 — synthetic
+            # posterization reads 1.0). Super-resolution then amplifies
+            # whatever stairs remain, so this is the last cheap exit.
+            try:
+                from ai.postprocessing.deband import deband
+                debanded, deband_info = deband(context.working_image)
+                if deband_info.get("applied"):
+                    context.working_image = debanded
+                    context.add_log(
+                        f"Stage 8 Deband: quantization stairs smoothed "
+                        f"(score={deband_info.get('banding_score')}) (T-6)."
+                    )
+            except Exception as deband_exc:
+                context.add_log(f"Stage 8 Deband skipped: {deband_exc}")
         except Exception as exc:
             context.add_log(f"Stage 8 Pre-SR Anti-Aliasing failed: {exc}")
 

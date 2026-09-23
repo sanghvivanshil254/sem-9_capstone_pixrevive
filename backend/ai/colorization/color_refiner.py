@@ -795,6 +795,75 @@ class ColorArtifactReducer:
             cv2.COLOR_LAB2RGB,
         )
 
+    # ------------------------------------------------------------------ T-7 --
+    # Dye-fade / color-cast rebalancing (Phase 4B.5). Input-side complement to
+    # neutralize_global_cast: that one removes DDColor's warm shift on the
+    # OUTPUT; this one corrects a faded print's cast BEFORE analysis and
+    # colorization see it. Probe-calibrated gate (.freebuff probe, deleted
+    # post-phase): sepia-classified corpus images carry devB up to +32.9 —
+    # that is HISTORIC CHARACTER the pipeline deliberately preserves, so they
+    # are excluded by color_type. The target is a color-classified print with
+    # a dye-fade cast (real corpus: screenshot_portrait_3, devA +10.7);
+    # color images within the gate (portrait_2, devA +3.9) stay untouched.
+
+    CAST_GATE = 8.0        # fire only beyond this max |a/b| deviation
+    CAST_STRENGTH = 0.7    # partial correction — never force neutral
+
+    @staticmethod
+    def rebalance_dye_fade(img: np.ndarray,
+                           color_type: str = "color",
+                           context: Optional[PipelineContext] = None,
+                           gate: float = None,
+                           strength: float = None) -> tuple[np.ndarray, dict]:
+        """Rebalance differential dye fading on COLOR-classified prints.
+
+        Luminance-weighted gray-world measurement of the a*/b* deviation,
+        corrected with a partial channel-curve (same law as the salvaged
+        neutralize_global_cast). Sepia and grayscale images are returned
+        BITWISE unchanged by type — sepia tone is intentional historic
+        character, and grayscale has no chroma to rebalance (documented
+        false-negative: a heavily faded print the analyzer calls sepia will
+        not be corrected).
+
+        Returns (image, info) where info records the decision for metadata.
+        """
+        gate = ColorArtifactReducer.CAST_GATE if gate is None else gate
+        strength = ColorArtifactReducer.CAST_STRENGTH if strength is None else strength
+        info: dict = {"applied": False, "color_type": color_type}
+
+        if color_type != "color":
+            info["reason"] = f"type '{color_type}' excluded — sepia tone is historic character"
+            return img, info
+
+        try:
+            lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB).astype(np.float32)
+            Lw = lab[:, :, 0] / 255.0 + 1e-3
+            dev_a = float(np.sum((lab[:, :, 1] - 128.0) * Lw) / np.sum(Lw))
+            dev_b = float(np.sum((lab[:, :, 2] - 128.0) * Lw) / np.sum(Lw))
+            info["dev_a"] = round(dev_a, 2)
+            info["dev_b"] = round(dev_b, 2)
+
+            if max(abs(dev_a), abs(dev_b)) <= gate:
+                info["reason"] = f"cast within gate ({gate:.0f})"
+                return img, info
+
+            lab[:, :, 1] -= dev_a * Lw * strength
+            lab[:, :, 2] -= dev_b * Lw * strength
+            out = cv2.cvtColor(
+                np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB
+            )
+            info["applied"] = True
+            info["strength"] = strength
+            if context:
+                context.add_log(
+                    f"ColorArtifactReducer: dye-fade rebalance "
+                    f"(a={dev_a:+.1f}, b={dev_b:+.1f}, strength={strength:.2f})"
+                )
+            return out, info
+        except Exception as exc:  # pragma: no cover - defensive
+            info["error"] = str(exc)
+            return img, info
+
 
 class GradientPreservingSmoother:
     """

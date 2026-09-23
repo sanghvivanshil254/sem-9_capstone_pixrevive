@@ -477,10 +477,25 @@ class RestorationPipeline(
         # destructive inpainting of facial anatomy.
         faces = self._stage_4_face_detect(context, on_progress)
 
-        # -- PipelineRouter — authority (Q-1) -------------------------------------
-        # The route's run_* flags are ANDed with the user's enable_* flags:
-        # a stage runs only when both allow it. On clean images the route
-        # narrows the pipeline (skip LaMa/GFPGAN); user opt-outs always win.
+        # -- T-7: Dye-fade rebalance (registry stage 'cast_fix') -----------------
+        # Input-side cast correction for COLOR-classified prints only; sepia
+        # tone is historic character and is excluded by color_type (documented
+        # false-negative, the safe direction). Uses the logic salvaged from the
+        # deleted Enhancer (D17), now in ColorArtifactReducer.
+        try:
+            from ai.colorization.color_refiner import ColorArtifactReducer as _CAR
+            color_type = context.image_metadata.get("color_type", "color")
+            if on_progress:
+                on_progress("cast_fix", 11, "Rebalancing faded print colors...")
+            fixed_img, cast_info = _CAR.rebalance_dye_fade(
+                context.working_image, color_type=color_type, context=context
+            )
+            if cast_info.get("applied"):
+                context.working_image = fixed_img
+            context.image_metadata["cast_fix"] = cast_info
+        except Exception as exc:
+            logger.warning("T-7 cast fix failed, keeping input: %s", exc)
+
         route = self.router.route(context)
         context.add_log(
             f"PipelineRouter: '{route['pipeline_name']}' - {route['description']}"
