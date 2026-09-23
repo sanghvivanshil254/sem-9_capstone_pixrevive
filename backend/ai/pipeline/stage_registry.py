@@ -74,6 +74,18 @@ STAGE_REGISTRY: List[StageSpec] = [
         progress_message="Detecting and correcting scan skew...",
     ),
     StageSpec(
+        # T-5 flat-field: second registry-registered taxonomy stage. Like
+        # deskew, it runs pre-context (before analysis measures the image) so
+        # damage thresholds see material, not lamp geometry. Gated on symmetric
+        # corner deficit of the background envelope; inert on the whole real
+        # corpus by design (see ImageNormalizer.correct_illumination).
+        id="flat_field",
+        name="Flat-field illumination correction",
+        method=None,  # inlined in restore() after despeckle (pre-context)
+        progress_pct=2,
+        progress_message="Flattening scan illumination...",
+    ),
+    StageSpec(
         id="despeckle",
         name="Impulse & speck suppression",
         method="_stage_0_despeckle",

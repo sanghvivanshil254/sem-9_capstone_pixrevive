@@ -262,3 +262,125 @@ class ImageNormalizer:
         )
         return rotated, angle
 
+    # ------------------------------------------------------------------ T-5 --
+    # Flat-field illumination correction (Phase 4B.2). Scanners light the pane
+    # unevenly: the lamp falls off toward the edges, so the same emulsion
+    # density records darker near the borders and downstream contrast gates
+    # (damage thresholds, variance clusters) measure geometry, not material.
+    # The classical fix is a background estimate + divide; the hard part is the
+    # GATE, because natural content is full of smooth gradients (a portrait's
+    # dark hair beside a lit cheek) that a naive "illumination varies" test
+    # cannot tell from a lamp defect.
+    #
+    # The gate was chosen by probe (scripts/_probe_flatfield.py, deleted after
+    # the phase): fit a quadratic field to the morphological-closing envelope
+    # of 17 real dataset photos plus synthetic vignettes/tilts/content bands,
+    # and measure candidate discriminators. Results that killed the obvious
+    # candidates:
+    #   * per-channel field correlation — dead: EVERYTHING measures ~1.0
+    #     (portrait channels are mutually correlated; even a half-black band
+    #     is channel-neutral). Not a lamp signature after all.
+    #   * quadratic fit R^2 — dead: real photos span 0.09-0.98, no gap.
+    #   * raw field amplitude M — dead: content reaches M=0.91 (case2), a
+    #     0.25-strength vignette only 0.16.
+    # The survivor is SYMMETRIC CORNER FALLOFF: a lamp/vignette defect puts
+    # ALL FOUR corners of the envelope down together (probe: vignette corner
+    # spread 0.011, corner deficit 0.67), while content gradients are
+    # spatially lopsided (every real photo spread >= 0.27; a dark content band
+    # spread 1.30). Gating on symmetric deficit keeps the stage inert on the
+    # entire real corpus; the cost is documented below.
+
+    MIN_CORNER_DEFICIT = 0.20   # fire only when corners drop >=20% below center
+    MAX_CORNER_SPREAD = 0.12    # and only when all four drop TOGETHER
+    MAX_CORRECTION = 2.0        # never brighten a pixel by more than 2x
+
+    @classmethod
+    def estimate_illumination_deficit(cls, img: np.ndarray) -> dict:
+        """Measure symmetric corner falloff of the image's background envelope.
+
+        Returns {"corner_deficit", "corner_spread", "field"} where the first
+        two gate the correction and `field` is the low-order background field
+        (None when unmeasurable). On the real corpus these read deficit 0.0-0.6
+        with spread 0.27-0.63 (asymmetric => content, not lamp); a synthetic
+        vignette reads deficit 0.2-0.67 with spread <= 0.01.
+        """
+        h, w = img.shape[:2]
+        L = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
+        k = max(31, min(151, (min(h, w) // 8) | 1))
+        se = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        envelope = cv2.morphologyEx(L, cv2.MORPH_CLOSE, se)
+
+        b = max(8, min(h, w) // 40)
+        corners = [
+            float(np.mean(envelope[:b, :b])), float(np.mean(envelope[:b, -b:])),
+            float(np.mean(envelope[-b:, :b])), float(np.mean(envelope[-b:, -b:])),
+        ]
+        center = float(np.mean(
+            envelope[h // 2 - b:h // 2 + b, w // 2 - b:w // 2 + b]
+        ))
+        denom = max(center, 1e-6)
+        corner_deficit = (center - float(np.mean(corners))) / denom
+        corner_spread = (max(corners) - min(corners)) / denom
+
+        # Low-order field for the correction: quadratic surface fit to the
+        # envelope (downsampled to 128x128 for a stable, tiny least-squares).
+        small = cv2.resize(envelope, (128, 128), interpolation=cv2.INTER_AREA)
+        ys, xs = np.mgrid[0:128, 0:128]
+        xn, yn = xs / 127.0, ys / 127.0
+        A = np.column_stack([
+            np.ones(128 * 128), xn.ravel(), yn.ravel(),
+            (xn * xn).ravel(), (yn * yn).ravel(), (xn * yn).ravel(),
+        ])
+        z = small.ravel().astype(np.float64)
+        coef, *_ = np.linalg.lstsq(A, z, rcond=None)
+        field = cv2.resize(
+            (A @ coef).reshape(128, 128).astype(np.float32), (w, h),
+            interpolation=cv2.INTER_LINEAR,
+        )
+        return {
+            "corner_deficit": corner_deficit,
+            "corner_spread": corner_spread,
+            "field": field,
+        }
+
+    @classmethod
+    def correct_illumination(cls, img: np.ndarray) -> tuple[np.ndarray, dict]:
+        """T-5: flatten scanner illumination falloff. Returns (image, info).
+
+        Gated: the image is returned BITWISE unchanged unless the background
+        envelope shows a SYMMETRIC corner deficit >= 20% (all four corners
+        down together, spread <= 12%) — the signature of a lamp/vignette
+        defect. Content gradients (portraits, landscapes, bands) are
+        asymmetric and never trigger. The correction divides each channel by
+        the fitted quadratic field, clamped so no pixel is brightened by more
+        than MAX_CORRECTION (2x) — preserving absolute exposure rather than
+        equalizing it away.
+
+        Known, accepted limitation: one-sided lamp falloff is asymmetric and
+        reads like content; this gate will not fire on it. False-negative is
+        the safe direction (no content damage); false-positive is the
+        destructive one.
+        """
+        info: dict = {"applied": False}
+        try:
+            m = cls.estimate_illumination_deficit(img)
+            deficit = m["corner_deficit"]
+            spread = m["corner_spread"]
+            info.update({
+                "corner_deficit": round(float(deficit), 3),
+                "corner_spread": round(float(spread), 3),
+            })
+            if deficit < cls.MIN_CORNER_DEFICIT or spread > cls.MAX_CORNER_SPREAD:
+                return img, info
+
+            field = m["field"]
+            gain = np.clip(field.max() / np.maximum(field, 1e-6), 1.0, cls.MAX_CORRECTION)
+            corrected = np.clip(
+                img.astype(np.float32) * gain[..., None], 0, 255
+            ).astype(np.uint8)
+            info.update({"applied": True, "max_gain": round(float(gain.max()), 3)})
+            return corrected, info
+        except Exception as exc:  # pragma: no cover - defensive
+            info["error"] = str(exc)
+            return img, info
+

@@ -361,6 +361,8 @@ class RestorationPipeline(
         # unchanged) unless dominant skew >= 0.3deg and <= 8deg.
         try:
             img_rgb, deskew_angle = ImageNormalizer.deskew(img_rgb)
+            if on_progress:
+                on_progress("deskew", 1, "Detecting and correcting scan skew...")
             if abs(deskew_angle) > 0:
                 deskew_meta: Dict[str, Any] = {
                     "deskew_applied": True,
@@ -375,17 +377,41 @@ class RestorationPipeline(
         # Auto-detect and crop scanner framing margins / solid canvas borders
         img_rgb, has_border, border_bbox = ImageNormalizer.detect_and_crop_borders(img_rgb)
 
+        # -- T-5: Flat-field illumination (registry stage 'flat_field') --------
+        # Runs AFTER the border crop and still pre-context: a solid dark photo
+        # border is exactly a symmetric corner deficit and would fake a lamp
+        # defect (and poison the gain field). Gated on symmetric corner
+        # deficit (>=20% with spread <=12%) — inert on all 17 real dataset
+        # images by design; fires on scanner vignetting. After the crop the
+        # context image is lamp-corrected before analysis measures it.
+        try:
+            img_rgb, ff_info = ImageNormalizer.correct_illumination(img_rgb)
+            ff_info["flat_field_applied"] = ff_info.pop("applied", False)
+            flat_field_meta: Dict[str, Any] = ff_info
+            if on_progress:
+                on_progress("flat_field", 2, "Flattening scan illumination...")
+        except Exception as exc:
+            logger.warning("T-5 flat-field failed, using uncorrected input: %s", exc)
+            flat_field_meta = {"flat_field_applied": False, "flat_field_error": str(exc)}
+
         meta = dict(external_metadata) if external_metadata else {}
         if has_border:
             meta["border_cropped"] = True
             meta["border_bbox"] = border_bbox
         meta.update(deskew_meta)
+        meta.update(flat_field_meta)
 
         context = PipelineContext(img_rgb, meta)
         if deskew_meta.get("deskew_applied"):
             context.add_log(
                 f"Stage -1 Deskew: corrected {deskew_meta['deskew_angle_deg']:+.2f}deg "
                 "dominant scan skew (T-4)."
+            )
+        if flat_field_meta.get("flat_field_applied"):
+            context.add_log(
+                f"Stage -1 FlatField: corrected symmetric illumination falloff "
+                f"(deficit={flat_field_meta.get('corner_deficit')}, "
+                f"spread={flat_field_meta.get('corner_spread')}) (T-5)."
             )
         if has_border:
             context.add_log(

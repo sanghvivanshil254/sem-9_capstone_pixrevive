@@ -10,6 +10,15 @@
       "route_gate": null
     },
     {
+      "id": "flat_field",
+      "name": "Flat-field illumination correction",
+      "method": null,
+      "progress_pct": 2,
+      "progress_message": "Flattening scan illumination...",
+      "debug_snapshot": null,
+      "route_gate": null
+    },
+    {
       "id": "despeckle",
       "name": "Impulse & speck suppression",
       "method": "_stage_0_despeckle",
