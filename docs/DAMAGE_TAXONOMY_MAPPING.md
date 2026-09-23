@@ -26,7 +26,7 @@ types in `SUPPORTED_NOISE_TYPES`).
 | Poisson / shot | 🟡 | Lumped into "random" family; signal-dependent σ (worse in darks) not modeled. **Accept** — LAB MAD estimate is a good proxy; no action |
 | Film grain | ✅ | Deliberately *preserved* on clean backgrounds (Stage 5 bg guard: high σ alone does not trigger aggressive smoothing) — matches taxonomy's "preserve vs remove is a choice" |
 | Chroma noise | ✅ | NoiseRouter `_reduce_chroma` (luma/chroma separated); Stage 8 pre-SR chroma bilateral |
-| Banding / posterization | 🟡 | Detected (banding_score) and `_reduce_compression` touches it gently; dedicated bit-depth-expansion + dithering pass would do better. **T-6 (P2, cheap)** |
+| Banding / posterization | ✅ | **T-6 (4B.4)**: `ai/postprocessing/deband.py` — float luminance smoothing + triangular-PDF dither, applied pre-SR inside Stage 8, gated on banding_score ≥ 0.6 (corpus max 0.503 stays bitwise inert; synthetic posterization reads 1.0) |
 | JPEG blocking / ringing | ✅ | `_blocking_score` detection + `_reduce_compression` deblock/deringe stage |
 
 ## 2. Physical / Chemical Degradation
@@ -39,22 +39,22 @@ types in `SUPPORTED_NOISE_TYPES`).
 | Small tears (no content loss) | ✅ | Same path; edge-continuity via LaMa |
 | Large missing pieces | 🟡 | LaMa fills plausibly — but **no flag that result is fabrication**. → §Honesty (T-2) |
 | Fading (overall) | ✅ | Stage 10b CLAHE + filmic curve; ColorSmoother |
-| Differential dye fading | 🟡 | Color cast correction exists in `Enhancer.correct_color_cast` — which is dead code (D17). Channel-curve rebalancing not wired. **T-7 (P2)** |
+| Differential dye fading | ✅ | **T-7 (4B.5)**: `ColorArtifactReducer.rebalance_dye_fade` (D17 salvage) wired input-side as `cast_fix` stage — color-classified prints only beyond deviation 8.0; sepia/grayscale excluded BY TYPE (historic character, not a defect) |
 | Yellowing / sepia shift | ✅ | Sepia detection + neutralization before colorization; white-balance via ColorArtifactReducer |
-| **Foxing / mold spots** | ❌ | `EnhancedDamageDetector.detect_dark_spots()` **exists but is never called** by Stage 2 — only 5 detectors + tearmark are wired. One-line wiring + regression case. **T-1 (P1, cheapest high-value fix in the plan)** |
+| **Foxing / mold spots** | ✅ | **T-1 (Phase 2)**: `detect_dark_spots` wired into Stage 2 with percentile-adaptive detection; router escalates measured dark-spot evidence to repair routes (4A) |
 | Silver mirroring | 🚫/🟡 | Rare; localized tone correction possible but niche. **Accept — document only** |
-| Water stains / mold texture | 🟡 | Covered only insofar as stains register as flakes/dark spots; region color correction absent. **T-7 partially addresses** |
+| Water stains / mold texture | 🟡 | Stains register as flakes/dark spots (both wired); T-7's input-side cast rebalance addresses the tonal component. Region-level stain recolor remains out of scope. **Accept** |
 | Emulsion cracking / crazing | ✅ | `detect_thin_crack_network` (Hessian + multi-scale black-hat) — a pipeline strength |
-| Curling / warping | ❌ | No dewarp. Estimable from border-line geometry (Hough). **T-4 (P2)** |
+| Curling / warping | 🟡 | Full dewarp not attempted. **T-4 (4B.1)** delivers the geometry half: Hough dominant-angle deskew (+ affine correction) straightens rotated scans; perspective/curl remains. **Accept residual** |
 
 ## 3. Optical / Capture Issues
 
 | Type | Verdict | Where / What's missing |
 |---|---|---|
-| Motion blur | ❌ | No deblur stage; Stage 10 USM sharpens but cannot recover blur. **T-3 (P1) — Restormer/NAFNet gated stage** |
-| Out-of-focus blur | ❌ | Same gap as motion blur → T-3 (same stage handles both) |
+| Motion blur | ✅ | **T-3 (4B.6)**: Stage 4.5 Restormer deblur (vendored, official checkpoint) — fires on H/V gradient anisotropy ≥ 2.2 (motion path B); corpus max 1.69 stays inert |
+| Out-of-focus blur | ✅ | **T-3 (4B.6)**, path A: edge-spread acutance ≥ 0.47 with the PSF-widening signature (corpus max 0.456; sigma ≥ 1.5 measures 0.48+); sharp-but-low-detail photos measured inert |
 | Chromatic aberration | ❌/🟡 | Channel realignment absent; rare in scans. **T-8 (P3)** |
-| Vignetting | ❌ | No flat-field correction. **T-5 (P2, classical, cheap)** |
+| Vignetting | ✅ | **T-5 (4B.2)**: flat-field correction via quadratic-field gain (max 2×), gated on SYMMETRIC corner deficit ≥ 20% (spread ≤ 12%); runs after border-crop so frames cannot fake a lamp defect; one-sided falloff documented false-negative |
 | Lens flare / light leaks | 🟡 | Bright-region detectors partially catch it (flake detector guard rails prevent overreach); dedicated handling out of scope. **Accept — document** |
 | Double exposure / ghosting | 🚫 | Under-determined; must be flagged, not processed. → §Honesty (T-2) |
 
@@ -82,9 +82,9 @@ types in `SUPPORTED_NOISE_TYPES`).
 | Type | Verdict | Where / What's missing |
 |---|---|---|
 | Low resolution / soft | ✅ | Real-ESRGAN ×4 tiled, 2K normalize, halftone pre-filter; Q-5 fixes the fallback cap |
-| Moiré / halftone | 🟡 | `_suppress_halftone` bilateral pre-filter in SR runs, but the stronger FFT-notch `HalftoneSuppressor` (D5) is dead code. **Decision: wire HalftoneSuppressor into Stage 1 as the moiré specialist OR delete it and accept bilateral-only. Recommend wire (T-9, P2)** |
-| Scan skew / rotation | ❌ | No deskew. `DeskewCropAction` (orchestrator, dormant) only crops solid borders — misnamed, no Hough rotation. **T-4 (P2)** — watermark-style horizontal-line estimate + affine correction in `ImageNormalizer` |
-| Uneven scan illumination | ❌ | No flat-field. **T-5 (P2)** — large-kernel background estimate (morphological closing / big Gaussian) + division correction, gated on gradient magnitude |
+| Moiré / halftone | ✅ | **T-9 (4B.3)**: HalftoneSuppressor (D5 salvage) wired inline after despeckle — FFT spectral-peak detection + Gaussian notch, self-gated with MAE safety valve; probe-verified inert on all 17 real photos (incl. case2 macro edges); SR bilateral pre-filter remains the faint-screen backstop |
+| Scan skew / rotation | ✅ | **T-4 (4B.1)**: `ImageNormalizer.deskew` — exhaustive HoughLines dominant-angle vote (deterministic), 0.3° inertness gate, ±8° range, runs pre-border-crop so rotation wedges get cropped; registered as the first registry T-stage |
+| Uneven scan illumination | ✅ | **T-5 (4B.2)** — see Vignetting above (same stage; gate discriminates lamp defects from content via corner-falloff symmetry, chosen by probe after channel-correlation and R² candidates failed) |
 | Interlacing | 🚫 | Video captures out of scope for photo restoration. **Accept — document** |
 
 ---
