@@ -188,6 +188,24 @@ STAGE_REGISTRY: List[StageSpec] = [
         route_gate="enable_denoise",
     ),
     StageSpec(
+        # T-3 deblur (the taxonomy's last unaddressed damage class): vendored
+        # einops-free Restormer with the official motion_deblurring checkpoint
+        # (GitHub release -> backend/ai/weights/restormer/, runtime-rule
+        # compliant). STRICT two-path gate: path A fires on defocus (edge-
+        # spread acutance), path B on motion (H/V gradient anisotropy) —
+        # probe-calibrated so the whole real corpus stays bitwise inert.
+        # Weights load lazily on first fire (100MB VRAM on a 4GB card), so
+        # /api/health reports 'deblur: skipped-or-unavailable' until a blurred
+        # image actually arrives.
+        id="deblur",
+        name="Optical blur correction (Restormer)",
+        method="_stage_4_5_deblur",
+        progress_pct=56,
+        progress_message="Correcting optical blur...",
+        debug_snapshot="05b_after_deblur",
+        route_gate="enable_denoise",  # blur correction shares denoise authority
+    ),
+    StageSpec(
         id="colorize",
         name="DDColor colorization",
         method="_stage_6_colorization",

@@ -113,6 +113,7 @@ class RestorationPipeline(
         self._model_load_failures: Dict[str, str] = {}
         self.inpainting_engine: Optional[InpaintingEngine] = None
         self._lama = None
+        self._deblur = None  # T-3: lazy — loads on first gate-fire only
         self._orchestrator: Optional[Any] = None
 
         if load_models:
@@ -220,6 +221,7 @@ class RestorationPipeline(
             "models": {
                 "defect_segmenter": defect_ready,
                 "lama": self._lama is not None and getattr(self._lama, "is_loaded", False),
+                "deblur": self._deblur is not None and self._deblur.is_loaded(),
                 "gfpgan": getattr(self.face_restorer, "gfpganer", None) is not None,
                 "realesrgan": getattr(self.super_resolution, "realesrgan", None) is not None or self.super_resolution.is_loaded,
                 "ddcolor": self.colorizer.is_loaded,

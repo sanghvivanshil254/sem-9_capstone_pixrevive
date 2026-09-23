@@ -18,11 +18,57 @@ from ai.damage.tearmark_detector import TearmarkDetector
 from ai.damage.mask_refiner import MaskRefiner
 from ai.restoration.inpainting_engine import InpaintingEngine
 from ai.restoration.super_resolution import SuperResolution
+from ai.restoration.deblurrer import ImageDeblurrer, estimate_optical_blur
 from ai.colorization.color_refiner import ColorArtifactReducer
 from ai.postprocessing.enhancer import Harmonizer
 
 
 class FinishStagesMixin:
+    def _stage_4_5_deblur(self, context: PipelineContext, on_progress: Optional[Callable]) -> None:
+        """Stage 4.5 (T-3): Restormer deblur, strictly gated on optical blur.
+
+        Two-path probe-calibrated gate (see deblurrer.estimate_optical_blur):
+        path A = defocus via edge-spread acutance, path B = motion via H/V
+        gradient anisotropy. The whole real corpus measures inert. The 100MB
+        Restormer loads lazily on the FIRST gate-fire: images that don't need
+        it never pay the VRAM.
+        """
+        DebugLogger.save_stage(context, "05_before_deblur")
+        if on_progress:
+            on_progress("deblur", 56, "Correcting optical blur...")
+
+        measurement = estimate_optical_blur(context.working_image)
+        if not measurement["is_optical"]:
+            context.add_log(
+                f"Stage 4.5 Deblur: not optical blur "
+                f"(spread={measurement.get('edge_spread')}, "
+                f"dir={measurement.get('directional_ratio')}) - skipping."
+            )
+            return
+
+        try:
+            if self._deblur is None:
+                self._deblur = ImageDeblurrer()
+            if not self._deblur.is_loaded():
+                context.add_log("Stage 4.5 Deblur: loading Restormer weights (first fire)...")
+                self._deblur.load(self._device)
+            context.start_timer("deblurring")
+            result, info = self._deblur.deblur(context.working_image, device=self._device)
+            if info.get("applied"):
+                context.working_image = result
+                context.add_log(
+                    f"Stage 4.5 Deblur: Restormer applied (path={info.get('fire_path')}, "
+                    f"spread={info.get('edge_spread')}, dir={info.get('directional_ratio')})."
+                )
+            else:
+                context.add_log(f"Stage 4.5 Deblur skipped: {info.get('reason', info.get('error'))}")
+        except FileNotFoundError as exc:
+            context.add_log(f"Stage 4.5 Deblur unavailable: {exc}")
+            self._model_load_failures["deblur"] = str(exc)
+        except Exception as exc:
+            context.add_log(f"Stage 4.5 Deblur failed: {exc}")
+            self._model_load_failures["deblur"] = str(exc)
+
     def _stage_5_spatially_gated_denoise(
         self,
         context: PipelineContext,

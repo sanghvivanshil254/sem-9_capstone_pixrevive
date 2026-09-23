@@ -100,6 +100,15 @@
       "route_gate": "enable_denoise"
     },
     {
+      "id": "deblur",
+      "name": "Optical blur correction (Restormer)",
+      "method": "_stage_4_5_deblur",
+      "progress_pct": 56,
+      "progress_message": "Correcting optical blur...",
+      "debug_snapshot": "05b_after_deblur",
+      "route_gate": "enable_denoise"
+    },
+    {
       "id": "colorize",
       "name": "DDColor colorization",
       "method": "_stage_6_colorization",

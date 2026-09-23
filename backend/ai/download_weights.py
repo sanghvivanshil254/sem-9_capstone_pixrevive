@@ -69,6 +69,14 @@ DOWNLOADS = [
     ),
     (
         "https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/parsing_parsenet.pth",
+
+        # T-3 deblur (Phase 4B.6): Restormer motion deblurring checkpoint.
+        # Loaded lazily by ai.restoration.deblurrer on first gate-fire only.
+        (
+            "https://github.com/swz30/Restormer/releases/download/v1.0/motion_deblurring.pth",
+            os.path.join("restormer", "motion_deblurring.pth"),
+            None,   # skip checksum (large file, trust GitHub release)
+        ),
         os.path.join("facelib", "parsing_parsenet.pth"),
         None,
     ),
