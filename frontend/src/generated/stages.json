@@ -1,6 +1,15 @@
 {
   "stages": [
     {
+      "id": "deskew",
+      "name": "Auto-deskew (scan geometry correction)",
+      "method": null,
+      "progress_pct": 1,
+      "progress_message": "Detecting and correcting scan skew...",
+      "debug_snapshot": null,
+      "route_gate": null
+    },
+    {
       "id": "despeckle",
       "name": "Impulse & speck suppression",
       "method": "_stage_0_despeckle",

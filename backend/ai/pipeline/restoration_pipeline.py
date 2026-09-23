@@ -355,6 +355,23 @@ class RestorationPipeline(
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+        # -- T-4: Auto-deskew (registry stage 'deskew', pre-context) -------------
+        # Skew must be corrected before the border crop so the rotation wedges
+        # land in the margins and get cropped away. Gated: inert (bitwise
+        # unchanged) unless dominant skew >= 0.3deg and <= 8deg.
+        try:
+            img_rgb, deskew_angle = ImageNormalizer.deskew(img_rgb)
+            if abs(deskew_angle) > 0:
+                deskew_meta: Dict[str, Any] = {
+                    "deskew_applied": True,
+                    "deskew_angle_deg": round(deskew_angle, 3),
+                }
+            else:
+                deskew_meta = {"deskew_applied": False}
+        except Exception as exc:
+            logger.warning("T-4 deskew failed, using uncorrected input: %s", exc)
+            deskew_meta = {"deskew_applied": False, "deskew_error": str(exc)}
+
         # Auto-detect and crop scanner framing margins / solid canvas borders
         img_rgb, has_border, border_bbox = ImageNormalizer.detect_and_crop_borders(img_rgb)
 
@@ -362,8 +379,14 @@ class RestorationPipeline(
         if has_border:
             meta["border_cropped"] = True
             meta["border_bbox"] = border_bbox
+        meta.update(deskew_meta)
 
         context = PipelineContext(img_rgb, meta)
+        if deskew_meta.get("deskew_applied"):
+            context.add_log(
+                f"Stage -1 Deskew: corrected {deskew_meta['deskew_angle_deg']:+.2f}deg "
+                "dominant scan skew (T-4)."
+            )
         if has_border:
             context.add_log(
                 f"Stage 0 Pre: Auto-cropped solid framing margins "
@@ -480,11 +503,17 @@ class RestorationPipeline(
         # on_progress into the mask parameter and poison the mask store.)
         # ========================================================================
         _ran_inline = {
+            "deskew",  # pre-context: runs before PipelineContext exists (T-4)
             "despeckle", "analyze", "face_detect", "damage_detect", "inpaint",
             "damage_cluster_smooth", "refresh_faces",
         }
         for spec in STAGE_REGISTRY:
             if spec.id in _ran_inline:
+                continue
+            if spec.method is None:
+                # Contract: method=None stages are dispatched by restore()
+                # itself (inline or pre-context). getattr(self, None) would
+                # raise; skipping keeps the loop total over the registry.
                 continue
 
             # Route authority (Q-1): registry gates read the ANDed flags.

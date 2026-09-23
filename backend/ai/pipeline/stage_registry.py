@@ -62,6 +62,18 @@ class StageSpec:
 # Ordered by progress-emission order (see module docstring).
 STAGE_REGISTRY: List[StageSpec] = [
     StageSpec(
+        # T-4 auto-deskew: the FIRST registry entry proving the T-stage
+        # extension design. method=None because deskew must run before the
+        # border crop — i.e. before PipelineContext even exists — so restore()
+        # executes it ahead of the inline prelude. The registry still owns its
+        # position, id, and contract, and the frontend export lists it.
+        id="deskew",
+        name="Auto-deskew (scan geometry correction)",
+        method=None,  # inlined in restore() before border crop (pre-context)
+        progress_pct=1,
+        progress_message="Detecting and correcting scan skew...",
+    ),
+    StageSpec(
         id="despeckle",
         name="Impulse & speck suppression",
         method="_stage_0_despeckle",
