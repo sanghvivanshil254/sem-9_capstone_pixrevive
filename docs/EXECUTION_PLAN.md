@@ -252,6 +252,19 @@ never return to the OS from a live interpreter, so in-process sweeps self-refuse
 floor; fixed seed across points so scale is the only variable). Raw data:
 `test_artifacts/reimagine_sweep/`.
 
+### Phase H4 — FaceID-class identity conditioning (2026-09-27) — implemented
+
+The sweep's structural conclusion, implemented as new scope:
+
+| Item | Status |
+|---|---|
+| ArcFace identity embedder | ✅ `ai/validation/faceid_embedder.py` — YuNet landmarks → 112×112 similarity alignment → buffalo_l `w600k_r50.onnx` (512-d) via cv2.dnn/onnxruntime. Zero new pip deps (insightface has no cp312 wheels — deliberately avoided). Real-model tests: deterministic embeds, perturbation-stable (>0.6 cosine under zoom+shift), synthetic faces honestly undetectable |
+| FaceID conditioning adapter | ✅ `ai/restoration/faceid_adapter.py` — vendored reimplementation of tencent-ailab/IP-Adapter's FaceID loader (`ip-adapter-faceid_sd15.bin`, LoRA rank 128, 4 identity tokens CONCATENATED to text embeddings, SDPA processors matched to diffusers 0.40). Fitted ONCE at pipeline load, before the CPU-offload snapshot (post-offload swaps crash — measured); faceless images run null identity tokens (`proj(zeros)`), retiring the no-face crash class. Install failure → clean CLIP fallback; `REIMAGINE_FACEID=0` disables |
+| Live-path proof | ✅ `scripts/smoke_faceid.py` on the real SD1.5 inpaint pipeline: strict install on the real UNet, 8-step generation clean (black share 0.000), evidence composite bytewise intact, faceless pass ok, ArcFace self-retrieval 0.683. Two crash classes found & fixed en route: UNet `encoder_hid_dim_type="ip_image_proj"` demanded image embeds after the FaceID swap; post-offload processor swaps strand new weights on CPU |
+| Calibration sweep vs H3 baseline | ✅ **Measured (fixed seed, case9 60%-destroy): honest negative.** FaceID conditions (mechanism proven; ArcFace self-retrieval 0.683) but SFace composite identity scored 0.095/0.098 (scales 0.5/1.0) vs CLIP's 0.233 — the destroyed-face reference embedding is plausibly noise-dominated. Neither clears the gate; rollback + disclosure is the designed behavior at hopeless coverage. FaceID stays enabled for moderate-damage runs; see design doc §12.1 |
+| Weights | ✅ `scripts/fetch_faceid_weights.py` — buffalo_l recognizer mirrored from `immich-app/buffalo_l` (HF; GitHub release CDN crawled at ~130 KB/s), adapter from `h94/IP-Adapter-FaceID` (files at repo ROOT — `models/…` 404s, HEAD-verified), ~306 MiB total |
+| Disclosure | ✅ report block carries `identity_conditioning` ∈ {faceid, clip, none} — what actually governed, not what was planned |
+
 ### Integration audit (2026-09-27) — 5 live-path bugs found and fixed
 
 The full chain was exercised end-to-end through the real API (heavy-damage probe with

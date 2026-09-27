@@ -275,3 +275,70 @@ answer on hopeless coverage, and the gate's refusal is the designed behavior.
 * H3 gate hardening: `compare(max_faces=0)` verifies every YuNet face (worst cosine
   governs); per-face scores land in the report block; `reimagine(rerolls=N)` bounds the
   ladder per call.
+
+## 12. Phase H4 — FaceID-class identity conditioning (2026-09-27)
+
+The H3 sweep's structural conclusion: seed variance (cosine spread 0.21–0.38)
+dwarfs any IP-Adapter scale effect (~0.03), because CLIP-crop conditioning
+embeds a *damaged* reference. H4 replaces the conditioning signal itself:
+
+* **Identity embeddings**: `ai/validation/faceid_embedder.py` — YuNet
+  landmarks → similarity-align to the 112×112 ArcFace template →
+  `w600k_r50.onnx` (InsightFace buffalo_l's ResNet50 recognizer, 512-d) via
+  cv2.dnn or onnxruntime, L2-normalized. Zero new pip deps (insightface has
+  no cp312 wheels; avoided deliberately). Measured: the buffalo_l v0.7 zip
+  ships `w600k_r50.onnx` (no "mbt" file) — the fetcher's strict listing
+  check caught the name error before any bad extraction.
+* **Conditioning adapter**: `ai/restoration/faceid_adapter.py` — vendored
+  reimplementation of tencent-ailab/IP-Adapter's FaceID loader
+  (`ip-adapter-faceid_sd15.bin`, LoRA rank 128, 4 identity tokens): MLP
+  projection 512→4×768 tokens CONCATENATED to the text embeddings (cond +
+  uncond), LoRA-halved attention processors, SDPA variant matched to
+  diffusers 0.40's Attention surface. `install()/uninstall()` swap the UNet's
+  whole processor set — the slot is exclusive with the CLIP IP-Adapter.
+* **Priority sync in `_generate`**: FaceID (when an identity embed exists) >
+  CLIP adapter (when a face crop exists) > none. Two-way in both branches
+  (adapter installed ⇔ embeds supplied — the measured 2026-09-27 crash rule).
+  Embedder/crop unavailable → clean CLIP fallback; no face → unconditioned.
+  `REIMAGINE_FACEID=0` disables; scale reuses `REIMAGINE_IP_SCALE`.
+* **Disclosure**: report block carries `identity_conditioning` ∈
+  {faceid, clip, none}.
+* Weights: `backend/ai/weights/faceid/w600k_r50.onnx`,
+  `backend/ai/weights/ip_adapter_faceid/` (scripts/fetch_faceid_weights.py;
+  urllib direct URLs per the runtime rules).
+* Sweep harness: `REIMAGINE_SWEEP_DIR=test_artifacts/reimagine_sweep_faceid
+  PYTHONPATH=backend python scripts/sweep_ip_scale.py 0.5,1.0` reuses the H3
+  fixed-seed case9 fixture verbatim, so results are directly comparable to
+  the §11 baseline. Results appended below when measured.
+
+### §12.1 Measured results (2026-09-27)
+
+* **Mechanism verified live** (`scripts/smoke_faceid.py`, real SD1.5 inpaint pipe,
+  minimal tier): FaceID strict-installs on the real UNet BEFORE the CPU-offload
+  snapshot; 8-step identity-token generation is clean (black share 0.000), the
+  evidence composite stays bytewise intact, the faceless null-token pass works,
+  and ArcFace self-retrieval (input identity vs generated face) is **0.683** —
+  conditioning demonstrably flows. Two crash classes found and fixed en route:
+  `encoder_hid_dim_type="ip_image_proj"` demanded image embeds after the
+  processor swap, and post-offload processor swaps strand new weights on CPU.
+* **Calibration sweep (fixed seed = H3 baseline, case9 60%-destroy mask, 25
+  steps, SFace worst-cosine on the composite)**:
+
+  | conditioning | scale | SFace cosine | verdict |
+  |---|---|---|---|
+  | CLIP (H3 baseline) | 0.5 | 0.233 | rollback |
+  | CLIP (H3 baseline) | 1.0 | 0.244 | rollback |
+  | **FaceID** | 0.5 | **0.095** | rollback |
+  | **FaceID** | 1.0 | **0.098** | rollback |
+
+* **Honest verdict**: on truly hopeless face coverage, FaceID conditioning does
+  NOT rescue identity under the SFace gate — it measured *worse* than CLIP,
+  plausibly because the reference ArcFace embedding is computed from a
+  destroyed face (noise-dominated). Conditioning is real (scores moved, and
+  ArcFace-space self-retrieval is high) but the SFace-measured composite
+  identity on this fixture regressed. The gate's rollback is the correct
+  behavior, and the evidence-preserving fallback IS the feature at this
+  damage level. FaceID remains enabled (`REIMAGINE_FACEID` on by default when
+  weights exist) — its value case is moderate damage with a meaningful
+  surviving face reference, where the identity embedding is not noise;
+  the hopeless-coverage behavior is unchanged: honest rollback + disclosure.

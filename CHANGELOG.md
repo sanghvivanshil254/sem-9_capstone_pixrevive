@@ -6,6 +6,23 @@ All notable changes to PixRevive are documented here. Format follows
 ## [Unreleased]
 
 ### Added
+- **Phase H4 — FaceID-class identity conditioning (beta).** The H3 sweep's structural fix,
+  now implemented: generation is conditioned on a trained *identity* embedding instead of a
+  CLIP embedding of a damaged crop. `ai/validation/faceid_embedder.py` computes 512-d
+  ArcFace embeddings (YuNet landmarks → 112×112 similarity alignment → buffalo_l's
+  `w600k_r50.onnx` via cv2.dnn/onnxruntime — zero new pip deps, insightface deliberately
+  avoided); `ai/restoration/faceid_adapter.py` is a vendored reimplementation of
+  tencent-ailab/IP-Adapter's FaceID loader (`ip-adapter-faceid_sd15.bin`, LoRA rank 128,
+  4 identity tokens concatenated to the text embeddings, SDPA processors matched to
+  diffusers 0.40). FaceID is fitted once at pipeline load, BEFORE the CPU-offload snapshot
+  (post-offload processor swaps crash — measured); faceless images generate with null
+  identity tokens (`proj(zeros)`), which retires the historical no-face crash class.
+  Report discloses `identity_conditioning` ∈ {faceid, clip, none}. Weights:
+  `scripts/fetch_faceid_weights.py` (buffalo_l recognizer mirrored from
+  `immich-app/buffalo_l`, adapter from `h94/IP-Adapter-FaceID`; ~306 MiB total).
+  Smoke-verified on the real SD1.5 inpaint pipeline: install strict-loads, generation
+  runs clean through the LoRA/SDPA path, evidence composite stays bytewise intact,
+  faceless pass works, ArcFace self-retrieval 0.68 at 8 steps (`scripts/smoke_faceid.py`).
 - **Hybrid Evidence-Preserving Diffusion, Phase H1/H2 (beta)** — the re-imagine tier from
   [docs/HYBRID_DIFFUSION_DESIGN.md](docs/HYBRID_DIFFUSION_DESIGN.md) v2. When ≥35% of the
   frame (or ≥55% of the worst face) is classified unrecoverable, Stage 12 re-imagines ONLY

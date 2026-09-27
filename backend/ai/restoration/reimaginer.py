@@ -85,6 +85,31 @@ def _ip_scale() -> float:
                        raw, IP_ADAPTER_SCALE)
         return IP_ADAPTER_SCALE
 
+
+# --- FaceID-class identity conditioning (Phase H4) -------------------------
+# The H3 sweep measured the structural ceiling of CLIP-crop conditioning
+# (seed variance 0.21-0.38 dwarfs any scale effect); FaceID conditioning
+# attacks the real problem by feeding generation a trained *identity*
+# embedding (ArcFace 512-d) instead of a CLIP embedding of a damaged crop.
+# Weights: backend/ai/weights/ip_adapter_faceid/ (scripts/fetch_faceid_weights.py).
+FACEID_BIN = os.path.join(WEIGHTS, "ip_adapter_faceid", "models",
+                          "ip-adapter-faceid_sd15.bin")
+FACEID_LORA = os.path.join(WEIGHTS, "ip_adapter_faceid", "models_lora",
+                           "ip-adapter-faceid_sd15_lora.safetensors")
+
+
+def _faceid_enabled() -> bool:
+    """FaceID conditioning opt-in (weights present; REIMAGINE_FACEID=0 disables).
+
+    Default ON when the weights exist. It REPLACES the CLIP adapter while
+    active — the processor slot is exclusive — and cleanly falls back when
+    weights are absent, the install fails, or the image yields no identity
+    embedding (faceid_adapter.FaceIDAdapter is the installer).
+    """
+    if os.environ.get("REIMAGINE_FACEID") == "0":
+        return False
+    return os.path.exists(FACEID_BIN)
+
 DEFAULT_STEPS = 25
 DEFAULT_GUIDANCE = 7.5
 PROMPT = ("a clean vintage photograph of the same person, sharp natural detail, "
@@ -105,6 +130,10 @@ class _ReimagineState:
         self.tier: ResourceTier | None = None
         self.reason: str = ""
         self.measurements: dict = {}
+        self.faceid: Any | None = None   # live FaceIDAdapter, when installed
+        # What the LAST generation actually used (honesty for the record:
+        # 'faceid' | 'clip' | 'none' — set by run_pass, read by reimagine()).
+        self.conditioning_used: str | None = None
         # True only after a successful load_ip_adapter(); the presence check
         # alone lies (weights on disk != adapter installed on the UNet). Once
         # the adapter IS installed, diffusers' UNet REQUIRES image embeds —
@@ -117,6 +146,8 @@ class _ReimagineState:
         self.pipes = {}
         self.tier = None
         self.ip_loaded = False
+        self.faceid = None
+        self.conditioning_used = None
 
 
 _STATE = _ReimagineState()
@@ -247,7 +278,28 @@ def _load_pipeline(kind: str) -> Any:
     # Resolution: when identity conditioning is available it wins; SDPA
     # scaled-dot-product attention is already memory-efficient and
     # sequential CPU offload dominates the VRAM budget on MINIMAL.
-    ip_ok = not sdxl and _ip_adapter_present()
+    # Identity conditioning is decided ONCE per pipe load, BEFORE the
+    # CPU-offload hooks snapshot the UNet (smoke-measured 2026-09-27: a
+    # processor swap AFTER enable_sequential_cpu_offload leaves the new
+    # processors' weights outside the offload snapshot -> 'mat2 is on cpu'
+    # crash). FaceID wins when its weights are present; the CLIP adapter is
+    # the fallback. Faceless images need NO adapter surgery — they generate
+    # with null identity tokens (proj(zeros), the reference's uncond path).
+    faceid_ready = False
+    if not sdxl and _faceid_enabled():
+        from ai.restoration.faceid_adapter import FaceIDAdapter
+        fid = FaceIDAdapter(
+            pipe, FACEID_BIN,
+            lora_path=FACEID_LORA if os.path.exists(FACEID_LORA) else None)
+        if fid.install():
+            _STATE.faceid = fid
+            faceid_ready = True
+            logger.info("re-imagine: FaceID conditioning active (scale %.2f)",
+                        _ip_scale())
+        else:
+            _STATE.faceid = None
+            logger.warning("re-imagine: FaceID install failed — CLIP fallback")
+    ip_ok = (not sdxl and not faceid_ready and _ip_adapter_present())
     if ip_ok:
         try:
             pipe.load_ip_adapter(
@@ -264,7 +316,9 @@ def _load_pipeline(kind: str) -> Any:
             ip_ok = False
             logger.warning("re-imagine: IP-Adapter load failed (%s) — "
                            "identity conditioning disabled", exc)
-    if tier.attention_slicing and not ip_ok:
+    if tier.attention_slicing and not ip_ok and not faceid_ready:
+        # Slicing replaces attention processors and breaks BOTH adapter
+        # kinds (measured 2026-09-27 for CLIP; same mechanics apply).
         pipe.enable_attention_slicing()
 
     if tier.offload == "sequential":
@@ -307,11 +361,16 @@ def _black_share(arr: np.ndarray) -> float:
 
 def _generate(image_rgb: np.ndarray, mask: np.ndarray, kind: str,
               seed: int, size_px: int, steps: int, guidance: float,
-              ip_image=None) -> np.ndarray:
+              ip_image=None, id_embed=None) -> np.ndarray:
     """One full-canvas generation pass (tiles internally when tier demands).
 
     ip_image: PIL image of the input's surviving face (identity reference);
     None when no face was found or IP-Adapter is not loaded.
+    id_embed: L2-normalized 512-d ArcFace embedding — FaceID conditioning
+    (H4). The FaceID pipe was already fitted at _load_pipeline (BEFORE the
+    offload snapshot; no runtime processor swapping). When None on a FaceID
+    pipe, generation runs with null identity tokens — identity-neutral and
+    split-safe. On a CLIP pipe the pre-H4 ip_image path applies unchanged.
     """
     from PIL import Image
 
@@ -326,26 +385,39 @@ def _generate(image_rgb: np.ndarray, mask: np.ndarray, kind: str,
     # When this image has no detectable face (nothing to condition ON) the
     # adapter must be unloaded first; when a later image does have a face,
     # it is reloaded here. Keeps the cached pipeline honest across requests.
-    if kind != "sdxl" and _STATE.ip_loaded and ip_image is None:
-        try:
-            pipe.unload_ip_adapter()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("re-imagine: IP-Adapter unload failed (%s)", exc)
-        _STATE.ip_loaded = False
-    elif kind != "sdxl" and ip_image is not None and not _STATE.ip_loaded \
-            and _ip_adapter_present():
-        try:
-            pipe.load_ip_adapter(
-                os.path.join(WEIGHTS, "ip_adapter"),
-                subfolder="models",
-                image_encoder_folder="image_encoder",
-                weight_name="ip-adapter_sd15.safetensors",
-            )
-            pipe.set_ip_adapter_scale(_ip_scale())
-            _STATE.ip_loaded = True
-        except Exception as exc:  # noqa: BLE001 - degrade to unconditioned
-            logger.warning("re-imagine: IP-Adapter reload failed (%s)", exc)
+    # --- conditioning state (decided at pipe load; NO runtime swapping) ---
+    # FaceID pipe: always generate with 4 trailing identity tokens — real
+    # embeds when a face exists, null embeds (proj(zeros), the reference
+    # uncond path) when it doesn't. The processor split stays aligned and
+    # the offload snapshot is never touched. CLIP pipe: the existing
+    # two-way sync (adapter installed <=> ip_image supplied, measured rule
+    # 2026-09-27).
+    faceid_state = "on" if (kind != "sdxl" and _STATE.faceid is not None) \
+        else "off"
+    if faceid_state == "on":
+        _STATE.faceid.set_scale(_ip_scale())
+    elif kind != "sdxl":
+        # CLIP-adapter sync (unchanged behavior):
+        if _STATE.ip_loaded and ip_image is None:
+            try:
+                pipe.unload_ip_adapter()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("re-imagine: IP-Adapter unload failed (%s)", exc)
             _STATE.ip_loaded = False
+        elif ip_image is not None and not _STATE.ip_loaded \
+                and _ip_adapter_present():
+            try:
+                pipe.load_ip_adapter(
+                    os.path.join(WEIGHTS, "ip_adapter"),
+                    subfolder="models",
+                    image_encoder_folder="image_encoder",
+                    weight_name="ip-adapter_sd15.safetensors",
+                )
+                pipe.set_ip_adapter_scale(_ip_scale())
+                _STATE.ip_loaded = True
+            except Exception as exc:  # noqa: BLE001 - degrade to unconditioned
+                logger.warning("re-imagine: IP-Adapter reload failed (%s)", exc)
+                _STATE.ip_loaded = False
 
     if kind == "sdxl":
         # SDXL is trained at 1024; anything below ~512 degrades it. On
@@ -356,6 +428,7 @@ def _generate(image_rgb: np.ndarray, mask: np.ndarray, kind: str,
         gen_size = 512
 
     def run_pass(img: np.ndarray, msk: np.ndarray, s: int, sd: int) -> np.ndarray:
+        nonlocal faceid_state  # degraded-encode downgrade propagates out
         canvas = cv2.resize(img, (s, s), interpolation=cv2.INTER_CUBIC)
         m = cv2.resize(msk, (s, s), interpolation=cv2.INTER_NEAREST)
         kwargs: dict = dict(
@@ -365,8 +438,44 @@ def _generate(image_rgb: np.ndarray, mask: np.ndarray, kind: str,
             num_inference_steps=steps, guidance_scale=guidance,
             generator=torch.Generator(device="cpu").manual_seed(sd),
         )
-        if ip_image is not None and _STATE.ip_loaded:
+        if faceid_state == "on":
+            # H4: project the identity embedding to 4 tokens and CONCAT to
+            # text embeds (cond + uncond). Faceless input -> null embeds
+            # for both (proj(zeros): identity-neutral, split stays aligned).
+            with torch.inference_mode():
+                text, neg = pipe.encode_prompt(
+                    PROMPT, device="cpu", num_images_per_prompt=1,
+                    do_classifier_free_guidance=True,
+                    negative_prompt=NEGATIVE)
+                if id_embed is not None:
+                    cond_embed = torch.as_tensor(
+                        id_embed, dtype=torch.float32).unsqueeze(0)
+                else:
+                    cond_embed = torch.zeros((1, 512))
+                enc = _STATE.faceid.encode(
+                    cond_embed, device=text.device, dtype=text.dtype)
+                null_enc = _STATE.faceid.encode(
+                    torch.zeros((1, 512)),
+                    device=text.device, dtype=text.dtype)
+            if enc is not None and null_enc is not None:
+                tokens, _ = enc
+                uncond_tokens, _ = null_enc
+                del kwargs["prompt"], kwargs["negative_prompt"]
+                kwargs["prompt_embeds"] = torch.cat([text, tokens], dim=1)
+                kwargs["negative_prompt_embeds"] = torch.cat(
+                    [neg, uncond_tokens], dim=1)
+            else:
+                # Encoding failed: fall back to plain text prompts rather
+                # than crash — the SFace gate still judges the result.
+                logger.warning("re-imagine: FaceID encode failed — text-only")
+                faceid_state = "degraded"
+        elif ip_image is not None and _STATE.ip_loaded:
             kwargs["ip_adapter_image"] = ip_image
+        _STATE.conditioning_used = (
+            ("faceid" if id_embed is not None else "none")
+            if faceid_state == "on"
+            else "clip" if (ip_image is not None and _STATE.ip_loaded)
+            else "none")
         out = pipe(**kwargs).images[0]
         arr = np.asarray(out)
         if s != img.shape[1] or s != img.shape[0]:
@@ -491,6 +600,19 @@ def reimagine(original_rgb: np.ndarray,
             cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)).convert("RGB")
     record["identity_conditioned"] = ip_image is not None
 
+    # Identity EMBEDDING for FaceID conditioning (H4): computed from the
+    # same BGR crop. When present it governs; the CLIP-adapter path stays
+    # as fallback (embedder unavailable / embed fails / REIMAGINE_FACEID=0).
+    id_embed = None
+    if ip_image is not None and _faceid_enabled():
+        from ai.validation.faceid_embedder import FaceIDEmbedder
+        _emb = FaceIDEmbedder()
+        if _emb.available():
+            id_embed = _emb.embed(face_crop)  # 512-d, L2-normalized (or None)
+    record["identity_conditioning"] = (
+        "faceid" if (_STATE.faceid is not None)
+        else ("clip" if ip_image is not None else "none"))
+
     attempt, final = 0, None
     degraded = False
     rerolls = max(0, int(rerolls))
@@ -499,7 +621,8 @@ def reimagine(original_rgb: np.ndarray,
         try:
             gen = _generate(original, mask, kind, sd,
                             size_px=min(1024, max(original.shape[:2])),  # canvas cap
-                            steps=steps, guidance=guidance, ip_image=ip_image)
+                            steps=steps, guidance=guidance,
+                            ip_image=ip_image, id_embed=id_embed)
         except torch.cuda.OutOfMemoryError:
             logger.warning("re-imagine OOM on %s tier — degrading to SD1.5", tier.name)
             if kind == "sdxl" and _weights_present():
@@ -532,6 +655,8 @@ def reimagine(original_rgb: np.ndarray,
                 "re-imagine rolled back: identity could not be preserved "
                 f"after {attempt + 1} attempts (best SFace cosine "
                 f"{verdict.get('similarity')})")
+            if _STATE.conditioning_used:
+                record["identity_conditioning"] = _STATE.conditioning_used
             return record
         final = candidate
         record["identity"] = verdict
@@ -541,10 +666,16 @@ def reimagine(original_rgb: np.ndarray,
         record["status"] = "skipped_degraded"
         record["reason"] = ("re-imagine rolled back: identity could not be "
                             f"preserved after {rerolls + 1} attempts")
+        if _STATE.conditioning_used:
+            record["identity_conditioning"] = _STATE.conditioning_used
         return record
 
     record["status"] = "done"
     record["result"] = final
+    if _STATE.conditioning_used:
+        # What generation ACTUALLY used (install failures and encode
+        # degradations may have downgraded the planned conditioning).
+        record["identity_conditioning"] = _STATE.conditioning_used
     record["real_pixels_pct"] = round(real_pct, 1)
     record["generated_pixels_pct"] = round(100.0 - real_pct, 1)
     record["evidence_preserved"] = bool(
@@ -557,6 +688,12 @@ def reimagine(original_rgb: np.ndarray,
 
 def unload_reimagine_models() -> None:
     """Free VRAM/RAM held by the re-imagine pipelines (caller holds semaphore)."""
+    if _STATE.faceid is not None:
+        try:
+            _STATE.faceid.uninstall()
+        except Exception:  # noqa: BLE001 - teardown is best-effort
+            pass
+        _STATE.faceid = None
     for kind in list(_STATE.pipes):
         pipe = _STATE.pipes.pop(kind, None)
         del pipe

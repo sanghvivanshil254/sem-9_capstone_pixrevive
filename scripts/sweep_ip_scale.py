@@ -24,7 +24,10 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PY = sys.executable
-OUT_DIR = os.path.join("test_artifacts", "reimagine_sweep")
+# REIMAGINE_SWEEP_DIR redirects output (H4 FaceID sweep uses
+# test_artifacts/reimagine_sweep_faceid so the H3 CLIP baseline stays intact).
+OUT_DIR = os.environ.get("REIMAGINE_SWEEP_DIR",
+                         os.path.join("test_artifacts", "reimagine_sweep"))
 
 
 def child_env(scale: float) -> dict:
@@ -107,6 +110,7 @@ def run_single(scale: float) -> None:
     entry = {"scale": scale, "elapsed_s": round(elapsed, 1),
              "tier": tier.name,
              "identity_conditioned": rec.get("identity_conditioned"),
+             "identity_conditioning": rec.get("identity_conditioning"),
              "status": rec.get("status"),
              "identity": rec.get("identity"),
              "reason": rec.get("reason")}

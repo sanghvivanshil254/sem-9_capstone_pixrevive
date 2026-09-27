@@ -227,6 +227,9 @@ def _build(context: PipelineContext) -> Dict[str, Any]:
             "evidence_preserved": reim.get("evidence_preserved"),
             "generator": reim.get("generator"),
             "seed": reim.get("seed"),
+            # H4: "faceid" (ArcFace-embedded conditioning), "clip" (image-crop
+            # adapter) or "none" — which identity signal guided generation.
+            "identity_conditioning": reim.get("identity_conditioning"),
             # "Show what's real" (design §7): relative API path to the
             # colorized evidence-zone overlay for hybrid runs.
             "evidence_overlay": reim.get("evidence_overlay"),
