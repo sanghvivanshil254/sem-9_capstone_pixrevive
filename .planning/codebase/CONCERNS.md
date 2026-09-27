@@ -1,51 +1,59 @@
-# Codebase Concerns & Resolutions
+# Concerns & Watch Items
 
-**Analysis & Remediation Date:** 2026-09-19  
-**Status:** All critical bugs, concurrency hazards, security vectors, and test coverage deficiencies are resolved (28/28 tests passing). The primary active architectural challenge is transitioning from the static 14-stage waterfall to the v2.0 Two-Tier PPCAV Closed-Loop Orchestrator.
+**Analysis Date:** 2026-09-27 (full refresh; previous map 2026-09-19)
 
----
+Status framing: the 2026-09-19 concerns (false-positive crack masking, jawline shadow,
+over-denoising, scanner margins, concurrency) remain **resolved** and are still pinned by
+`tests/test_restoration_regressions.py` — not repeated here. This pass adds what changed
+since, with current evidence.
 
-## Resolved Tech Debt & Defect Cascades
+## Active Watch Items
 
-**1. False Positive Crack Masking on Specular Highlights:**
-- **Status:** RESOLVED
-- **Root Cause:** In `backend/ai/damage/enhanced_detector.py`, `detect_white_flakes` had a low threshold ($V > 165$, $L > \text{mean\_L} + 20$) and lacked boundary gradient checks, mistaking smooth specular highlights on hat ribbons/brims for peeling emulsion. `MaskRefiner` dilated these into solid masks, causing LaMa to erase hat brims with forehead skin.
-- **Fix:** Raised monochrome thresholds ($V > 215$, $L > \max(\text{mean\_L} + 35, 205)$) and added Sobel boundary gradient verification (`mean_bnd_grad >= 35.0`) to reject smooth highlights while keeping step-edge emulsion chips.
+**1. Host ceiling is the architecture's hard constraint (structural, managed).**
+7.3 GB RAM + GTX 1650 4 GB: fp16 diffusion is NaN-broken on this torch/GPU (documented),
+SDXL cannot run, and the 2.2 GB MINIMAL RAM floor means the backend must be paused for
+full-suite runs (torch/pytest coexistence segfaults). Everything is tiered/measured
+around it (`resource_profiler.py`), but any feature that adds resident models must go
+through the Stage-12-style **release/reload bridge** or it will never clear the floors.
 
-**2. Submental Jawline Shadow Erasure by GFPGAN:**
-- **Status:** RESOLVED
-- **Root Cause:** GFPGAN's face restoration crop blended down to $0.96 \times \text{crop\_h}$, replacing the natural dark shadow between chin and shoulder with flat synthesized skin.
-- **Fix:** Implemented an anatomical `chin_fade` mask in `backend/ai/restoration/face_restorer.py` starting at $0.84 \times \text{crop\_h}$ and feathering to $0.0$ by $0.92 \times \text{crop\_h}$.
+**2. Identity on hopeless coverage is unsolved by design (honest negatives recorded).**
+Measured: seed variance (±0.17 SFace cosine) dominates IP-Adapter scale effects (±0.03),
+and FaceID conditioning — while mechanically verified (ArcFace self-retrieval 0.683) —
+scored *worse* on the 60%-destroy fixture (0.095/0.098 vs CLIP 0.233) because the
+reference embedding is computed from destroyed pixels. The gate's rollback + disclosure
+is the correct behavior; FaceID's value case (moderate damage, meaningful reference
+face) is plausible but **not yet benchmarked** — see "Open questions".
 
-**3. Foggy Hair and Feather Textures from Over-Denoising:**
-- **Status:** RESOLVED
-- **Root Cause:** Stage 5 NLM denoising lacked luminance edge gating and did not compare local variance against the noise floor ($\sigma_{noise}^2$), smoothing fine hair strands.
-- **Fix:** Added noise-floor edge gating (`edge_thresh = max(30.0, 2.5 * sigma_noise)`) and variance protection (`noise_floor_var = max(16.0, sigma_noise ** 2)`) in `restoration_pipeline.py`.
+**3. Detector taxonomy coverage vs synthetic damage (disclosed limitation).**
+The trained detectors legitimately ignore damage outside their taxonomy: a 98%-altered
+synthetic blotch probe measured `frame_pct 0.0` at Stage 12 (blotches read as
+highlights, not damage). The skip reason now says so honestly. Implication: the hybrid
+beta fires on *taxonomy* damage (tears, flakes, foxing, mold), not arbitrary destruction.
+If wider recall is wanted, it's a detector-training scope decision, not a Stage-12 bug.
 
-**4. Scanner Canvas Margins Driving Neural Coordinate Drift:**
-- **Status:** RESOLVED
-- **Fix:** Implemented `ImageNormalizer.detect_and_crop_borders()` in `image_normalizer.py`, automatically detecting and trimming scanner canvas borders before neural stages.
+**4. Two CWD/anchor bug classes have bitten twice — keep the pattern.**
+CWD-relative paths broke weights resolution and the gate inside the uvicorn server
+(cwd=`backend/`), and post-offload attention-processor swaps stranded weights on CPU.
+Any new module that touches weights must anchor to `__file__`; any new conditioning must
+be fitted before `enable_sequential_cpu_offload()` or explicitly re-hooked.
 
-**5. Color Bleeding Across Clothing and Headwear:**
-- **Status:** RESOLVED
-- **Fix:** Wired `EdgeAwareColorBleedFixer.fix_bleeding(strength=0.75)` into `ColorArtifactReducer.reduce_artifacts()` in `color_refiner.py` and expanded `subject_mask` upward to protect headwear.
+**5. Commit hygiene is good but the tree is ahead of the remote (ops).**
+`main` = 6d2d479 (+ tag v1.1.0), **no remote configured** — single-machine risk on
+~7.5k lines of unpushed history. Also: `upcoming.txt` (user notes) intentionally
+untracked; `e2e/` Playwright suite cannot download browsers (CDP-attached Chrome only).
 
----
+## Open Questions (deliberately not scheduled)
 
-## Active Architectural Concerns & Roadmap (v2.0 Orchestrator Migration)
+- Does FaceID beat CLIP on *moderate* damage (meaningful reference face)? A benchmark
+  across the fixture set (FaceID on/off) would validate the H4 value case.
+- SDXL path is code-complete but unverifiable here — needs a STANDARD/AMPLE host.
+- ControlNet-inpaint (STANDARD/AMPLE) and AMPLE batch mode remain deferred by design.
 
-**1. Static Waterfall Brittleness:**
-- **Concern:** The existing 1,309-line `restoration_pipeline.py` executes stages sequentially in a one-way feedforward direction. If an upstream stage creates an artifact or fails to clean a defect, downstream stages cannot self-correct.
-- **Mitigation:** Migrating to the **Two-Tier PPCAV Loop** specified in `pixrevive_orchestrator_plan.md`.
+## Failure Modes to Watch in Production
 
-**2. Spatial Scale Inversion Across Super-Resolution:**
-- **Concern:** Real-ESRGAN upscales images by $4\times$. Looping back into inpainting or colorization after super-resolution requires $16\times$ more VRAM and compute, causing out-of-memory crashes and coordinate drift.
-- **Mitigation:** The v2.0 plan strictly decouples Tier 1 (native resolution iterative loop) from Tier 2 (terminal $4\times$ super-resolution and exhibition finish).
-
-**3. Detail Synthesis Without Semantic Material Segmentation:**
-- **Concern:** PixRevive lacks a semantic material parser (e.g., skin vs. fabric vs. hair). Attempting cross-photo patch borrowing risks pasting cloth weave onto skin.
-- **Mitigation:** The v2.0 plan restricts detail synthesis to **Anisotropic Structure-Tensor Grain Synthesizer** and high-frequency bandpass residual re-injection, avoiding ungrounded cross-region borrowing.
-
-**4. Latency Budgeting:**
-- **Concern:** Unbounded iterations of heavy deep models (LaMa, DDColor, GFPGAN) could cause restoration latency to spike from 30 seconds to several minutes.
-- **Mitigation:** Enforcing an **Action Cost Point Budget (20 CP Max)** in `LoopController` to guarantee all restorations finish within 45 seconds.
+- Stage-12 error branch: now logs traceback + surfaces `status:"error"` in the report —
+  if a report ever shows an empty reimagine block with `ran:true`, that's a regression.
+- Model reload after the VRAM bridge: a failed reload degrades the *next* request and
+  shows in `/api/health` `load_errors` — monitor that field after hybrid runs.
+- SSE consumers must treat only `complete`/`error` as terminal (worker emits progress
+  via `call_soon_threadsafe`; ordering is otherwise strict).

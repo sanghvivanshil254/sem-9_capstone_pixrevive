@@ -1,95 +1,92 @@
-<!-- refreshed: 2026-09-19 -->
 # Architecture
 
-**Analysis Date:** 2026-09-19
+**Analysis Date:** 2026-09-27 (full refresh; previous map 2026-09-19)
 
-## System Overview
+## System Shape
 
-```text
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                          Presentation Layer (Vite + React 19)               │
-├──────────────────────────┬──────────────────────────┬───────────────────────┤
-│    `ImageUploader.jsx`   │  `ComparisonSlider.jsx`  │  `ProgressBar.jsx`    │
-│  (Upload & User Controls)│ (Before / After Viewer)  │  (Monotonic SSE Dot)  │
-└────────────┬─────────────┴────────────┬─────────────┴───────────┬───────────┘
-             │                          │                         │
-             ▼                          ▼                         ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                   API & Transport Layer (FastAPI / Uvicorn)                 │
-│  - `backend/main.py` (CORS allowlist, static mounts, health checks)         │
-│  - `backend/routers/image_router.py` (/api/process, /api/process-stream)    │
-│  - `backend/routers/admin_router.py` (/api/admin/weights, /training_data)   │
-└──────────────────────────────────────┬──────────────────────────────────────┘
-                                       │
-                                       ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│               Service Orchestrator & Context (Singleton)                    │
-│  - `backend/services/image_service.py` (`ImageService` wrapper)             │
-│  - `backend/ai/pipeline/pipeline_context.py` (`PipelineContext` state)      │
-│  - Transitioning to Two-Tier PPCAV Closed-Loop Orchestrator (`v2.0 Plan`)    │
-└──────────────────────────────────────┬──────────────────────────────────────┘
-                                       │
-                                       ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│            Exhibition-Grade 14-Stage Restoration Pipeline                   │
-│             (`backend/ai/pipeline/restoration_pipeline.py`)                 │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ Stage -1: Framing Margin Detection & Auto-Cropping (`ImageNormalizer`)      │
-│ Stage 0: Impulse & Speckle Suppression (`ImpulseDenoiser`, `SpeckSuppressor`)│
-│ Stage 1: Degradation & Color Analysis (`QualityAnalyzer`)                   │
-│ Stage 1b/4: Early RetinaFace Face & 5-Landmark Detection (`FaceDetector`)   │
-│ Stage 2: Multi-Scale Fracture Masking (`EnhancedDetector`, `MaskRefiner`)   │
-│          - Boundary Sobel gradient verification rejects specular highlights │
-│ Stage 3: LaMa Deep Inpainting & Seam Smoothing (`InpaintingEngine`)         │
-│ Stage 2b: High-Variance Damage Cluster Smoothing                            │
-│ Stage 3b: Post-Inpaint Face Re-Detection                                    │
-│ Stage 5: Spatially-Gated 3-Zone Denoising (Face / Mid / Background NLM)      │
-│          - Noise-floor edge gating & variance protection preserves texture  │
-│ Stage 6: DDColor Global Colorization & Chrominance Infill Diffusion         │
-│ Stage 6c: Color Artifact Reduction (Banding, Saturation, Bleed Fixers)      │
-│          - EdgeAwareColorBleedFixer guided by luminance boundary gradients  │
-│ Stage 7: GFPGAN Damage-Aware Face Restoration                               │
-│          - Anatomical chin_fade mask protects submental jawline shadow      │
-│ Stage 8: Pre-SR Bilateral Anti-Aliasing (L* and chroma filtering)           │
-│ Stage 9: Real-ESRGAN x4plus Super-Resolution & Inpaint Seam Harmonizer      │
-│ Stage 9c: Post-SR Deferred Face Restoration (for small faces <90px)         │
-│ Stage 10: Contrast-Adaptive LAB Luminance Sharpening                        │
-│ Stage 10b: Projector Exhibition Grade (CLAHE clip 1.6 + Shadow S-Curve)     │
-└──────────────────────────────────────┬──────────────────────────────────────┘
-                                       │
-                                       ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                   Storage & Neural Weight Assets                            │
-│  - Model weights: `backend/ai/weights/` (LaMa, GFPGAN, RealESRGAN, DDColor) │
-│  - Temp outputs: `backend/temp_results/` (Task TTL 30-min auto-pruned)      │
-│  - Diagnostics: `debug_output/` (Sequential numbered stage snapshots)       │
-└─────────────────────────────────────────────────────────────────────────────┘
+Three-process local app: **React 19 SPA** (Vite, :5173) → **FastAPI** (:8000, REST + SSE)
+→ **16-stage in-process restoration pipeline** with GPU/CPU model management. No message
+broker, no DB — state is per-request `PipelineContext`; admin config is file-backed.
+
+## Request Flow
+
+```
+Client → image_router (POST /api/process | /api/process-stream, multipart form)
+       → ImageService.process_image()          (task id, semaphore acquire)
+       → RestorationPipeline.restore()/process() (PipelineContext)
+       → registry-dispatched stages in fixed order
+       → restoration_report built from metadata → SSE `complete` / PNG bytes
 ```
 
-## Architectural Layers
+GPU concurrency: one `asyncio.Semaphore(1)` in `image_router` serializes inference per
+process; **stages must never re-acquire it** (nested acquire = deadlock; verified none).
 
-### 1. Presentation Layer (Frontend)
-- Built with React 19 and Vite 8, utilizing Tailwind CSS v4.
-- Provides interactive drag-and-drop image upload, before/after split comparisons (`ComparisonSlider.jsx`), and real-time Server-Sent Events progress visualization (`ProgressBar.jsx`).
-- Settings panel exposes user toggles: `enable_repair`, `enable_denoise`, `enable_colorization`, `enable_face_restore`, and `enable_sr`.
+## Stage Graph (`backend/ai/pipeline/stage_registry.py`, order is contractual)
 
-### 2. API & Transport Layer
-- FastAPI asynchronous framework running on Uvicorn.
-- Endpoints:
-  - `POST /api/process`: Asynchronous task submission returning `task_id`.
-  - `GET /api/process/{task_id}/status`: Polling status endpoint.
-  - `GET /api/process/{task_id}/result`: PNG artifact retrieval.
-  - `POST /api/process-stream`: High-throughput Server-Sent Events (SSE) streaming monotonic progress percentage and status text directly to the UI.
-  - `GET /api/health`: System health and model availability check.
-  - `POST /api/admin/weights/upload`: Chunked background upload for model weights.
+| # | id | pct | Purpose / owner module |
+|---|---|---|---|
+| 0 | loading | 0 | model preload (skipped when warm) |
+| 1 | deskew | 1 | auto skew correction |
+| 2 | flat_field | 2 | illumination flattening |
+| 3 | despeckle | 3 | impulse-noise suppression |
+| 4 | moire | 4 | halftone/moiré suppression |
+| 5 | analyze | 10 | degradation profile → `image_metadata` |
+| 6 | face_detect | 11 | RetinaFace/YuNet → `metadata["faces"]` |
+| 7 | cast_fix | 12 | color-cast rebalance |
+| 8 | damage_detect | 20 | taxonomy detectors → `damage_masks["final"]` |
+| 9 | inpaint | 30 | LaMa + seam smoothing + face-wipeout circuit breaker |
+| 10 | damage_cluster_smooth | 35 | mask refinement post-inpaint |
+| 11 | refresh_faces | 0 | re-detect post-inpaint |
+| 12 | denoise | 50 | NLM with edge/variance gating (T-3 deblur gate: `deblur` stage fires only when blur detected) |
+| 13 | colorize | 65 | DDColor (records `colorization_applied` evidence flag) |
+| 14 | face_restore | 78 | GFPGAN + chin-fade anatomy mask |
+| 15 | pre_sr → super_res | 85–90 | Real-ESRGAN ×4 |
+| 16 | sharpen | 95 | border enhancement |
+| 17 | projector_grade | 98 | exhibition grading |
+| 18 | output_verify | 99 | closed-loop residue/color/texture checks |
+| 19 | **reimagine** | 99 | **Stage 12 — hybrid tier (opt-in)** |
 
-### 3. Pipeline Core & State Orchestration
-- `PipelineContext` (`backend/ai/pipeline/pipeline_context.py`): Central state container passed across all stages. Retains `original_image`, mutable `working_image`, `damage_masks`, `image_metadata`, and stage execution logs.
-- `RestorationPipeline` (`backend/ai/pipeline/restoration_pipeline.py`): The core 1,309-line processing pipeline orchestrating all stages in strict diagnostic sequence.
-- Diagnostic snapshots: Enabled via `PIXREVIVE_DEBUG=1`, saving sequential stage PNGs (00_input_raw.png through 10b_after_projector_grade.png) and timing reports in `debug_output/`.
+Stage methods live in `backend/ai/pipeline/stages/` (prep/color/damage/finish stage
+mixins); dispatch is data-driven from the registry (`route_gate` falls through to the
+user's pipeline flag — `enable_reimagine`).
 
-### 4. Evolution to v2.0 Two-Tier PPCAV Closed-Loop Orchestrator
-The planned architecture documented in `pixrevive_orchestrator_plan.md` replaces the feedforward waterfall with:
-- **Tier 1 (Inner Loop):** Native-resolution Perceive $\to$ Propose $\to$ Corroborate $\to$ Act $\to$ Verify loop with atomic `CanvasTransaction` rollbacks and a 20 Cost Point budget.
-- **Tier 2 (Terminal Pass):** One-way Real-ESRGAN $4\times$ super-resolution, seam harmonization, and projector exhibition grade CLAHE.
-- **Synthesis Manifest:** Outputting `synthesis_manifest.json` alongside restored images to document authentic vs. generative fabrication.
+## The Hybrid Re-Imagine Tier (Stage 12 — new since baseline)
+
+`backend/ai/pipeline/stages/finish_stages.py::_stage_12_reimagine`:
+
+1. **Coverage gate** — hopeless = ≥35% frame or ≥55% worst-face Destroy coverage in
+   `damage_masks["final"]`. Distinguishes "no unrecoverable damage detected" (detector
+   found nothing — disclosed honestly) from "below the bar" (LaMa already healed it).
+2. **VRAM bridge** — releases standard models (LaMa/GFPGAN/RealESRGAN/DDColor/RetinaFace/
+   U-Net via `unload()` + `_reload_models_on`) before the engine profiles resources;
+   restores them in `finally`. This is what makes Stage 12 *possible in-process*
+   (0.94 → 2.88+ GB free, measured).
+3. **Engine** (`backend/ai/restoration/reimaginer.py`) — resource-tiered SD inpaint with:
+   evidence composite (bytewise-asserted — every surviving pixel returns identical),
+   feathered tiling, NaN self-heal, SFace identity gate with bounded reroll ladder.
+4. **Evidence overlay** — on success, a colorized zone map
+   (`{task_id}_evidence.png`, green = original / magenta = re-imagined) is persisted and
+   served at `/api/process/{task_id}/evidence` ("Show what's real", design §7).
+5. **Disclosure** — full record into `metadata["reimagine"]` → report block → UI card.
+
+## Identity Conditioning (H4)
+
+Priority chain inside the re-imagine engine: **FaceID** (ArcFace 512-d embedding of the
+surviving face, projected to 4 cross-attention tokens concatenated to text embeds) →
+**CLIP IP-Adapter** (image-crop reference) → none (unconditioned). FaceID is fitted once
+at pipeline load, *before* the CPU-offload snapshot (`encoder_hid_dim_type` marker cleared
+— the CLIP loader's image-embeds requirement otherwise crashes the FaceID path); faceless
+images run null identity tokens (`proj(zeros)`), never adapter surgery at runtime.
+The SFace gate (`backend/ai/validation/face_identity_gate.py`, worst-cosine across ALL
+detected faces) remains the border control regardless of conditioning signal.
+
+## Invariants (unchanged, enforced by tests)
+
+- Evidence pixels are **bytewise identical** after a hybrid run (`_composite_evidence`
+  assertion + post-composite re-check in the stage).
+- The gate can only *reject* hybrid output, never silently pass it: undetectable
+  similarity → flag (kept, disclosed), < flag floor → rollback → standard result ships.
+- Any adapter state is two-way: adapter installed ⇔ matching embeds supplied
+  (the `'NoneType' is not iterable` crash class, measured 2026-09-27).
+- Stage 12 errors are logged with traceback AND surfaced as `status: "error"` in the
+  report — nothing swallows.

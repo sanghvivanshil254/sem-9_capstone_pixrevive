@@ -1,66 +1,78 @@
 # Technology Stack
 
-**Analysis Date:** 2026-09-19
+**Analysis Date:** 2026-09-27 (full refresh; previous map 2026-09-19)
 
 ## Languages
 
 **Primary:**
-- Python 3.12 (`C:\Program Files\Python312\python.exe`) - Entire backend service, 14-stage restoration pipeline, computer vision and deep learning inference, automated regression tests. Enforced system interpreter without virtual environments (`CLAUDE.md`, `GEMINI.md`, `AGENTS.md`).
-- JavaScript / JSX (ECMAScript 2022+ / React 19) - Frontend single-page application (`frontend/src/`), Vite build configuration (`frontend/vite.config.js`), and Playwright test suite (`e2e/`, `playwright.config.js`).
+- Python 3.12 (`C:\Program Files\Python312\python.exe`) — entire backend, now a 16-stage
+  restoration pipeline (Stage 12 re-imagine added post-baseline) + hybrid diffusion tier.
+  System interpreter only; virtual environments prohibited by policy (`CLAUDE.md`, `AGENTS.md`).
+  Pytest runner: `C:\Users\sangh\AppData\Roaming\Python\Python312\Scripts\pytest.exe`.
+- JavaScript / JSX (React 19) — frontend SPA (`frontend/src/`), Vite build
+  (`frontend/vite.config.js`), Playwright e2e suite (`e2e/`).
 
 **Secondary:**
-- HTML5 & CSS3 / Modern Tailwind CSS v4 - Frontend interface markup and styling system (`frontend/src/index.css`, `frontend/src/App.css`).
-- Batch Scripting (`.bat`) - Developer launcher scripts (`start_dev.bat`, `restart_all.bat`).
+- HTML5 / Tailwind CSS v4 — UI markup + styling (`frontend/src/index.css`).
+- Batch scripts — dev launchers (`start_dev.bat`, `restart_all.bat`).
 
 ## Runtime
 
-**Environment:**
-- Backend: System Python 3.12 (x86_64) on Windows. Virtual environments (`venv`, `.venv`, `conda`) are strictly prohibited by repository policy.
-- Frontend & Tooling: Node.js (v18+ or v20+) with npm.
+- Backend: system Python 3.12 x86_64 on Windows; no venvs. `PYTHONPATH=backend` required.
+- Frontend: Node.js + npm (Vite 7 dev server on 5173, production build in `frontend/dist/`).
+- GPU host: GTX 1650 4 GB — resource-tiered inference is designed around this limit
+  (`backend/ai/restoration/resource_profiler.py`).
 
-**Package Manager:**
-- Backend: `pip` via system Python (`"C:\Program Files\Python312\python.exe" -m pip install -r backend/requirements.txt`).
-- Frontend: `npm` using lockfile (`package-lock.json` in root and `frontend/package-lock.json`).
+## Frameworks & Key Libraries
 
-## Frameworks
+**Core (backend/requirements.txt pins):**
+- FastAPI + uvicorn — REST + SSE API (`backend/main.py`, `backend/routers/`).
+- PyTorch ≥2.0 (measured 2.13.0+cu126) — inference runtime for LaMa, DDColor, GFPGAN,
+  Real-ESRGAN, SD diffusion.
+- **diffusers ==0.40.0** — SD1.5/SDXL inpaint pipelines, IP-Adapter + FaceID conditioning
+  (`backend/ai/restoration/reimaginer.py`, `faceid_adapter.py`). Added in H1; the pinned
+  version matters (attention-processor surface differs across versions).
+- transformers ≥4.44,<6 · accelerate ≥1.0 (sequential CPU offload) · safetensors ≥0.4.
+- opencv (contrib) — YuNet face detection, SFace recognition, cv2.dnn ONNX inference
+  (ArcFace), classic CV stages.
+- psutil ≥6.0 — resource-tier measurements.
+- numpy / Pillow — image arrays, PNG persistence.
 
-**Core:**
-- FastAPI (`fastapi>=0.115`, `uvicorn>=0.30`) - High-performance asynchronous REST and Server-Sent Events (SSE) web API (`backend/main.py`, `backend/routers/image_router.py`, `backend/routers/admin_router.py`).
-- PyTorch & TorchVision (`torch>=2.0.0`, `torchvision>=0.15.0`) - Deep learning execution runtime for LaMa, DDColor, GFPGAN, and Real-ESRGAN (`backend/ai/pipeline/restoration_pipeline.py`).
-- React 19 (`react^19.2.7`, `react-dom^19.2.7`, `react-router-dom^7.18.1`) - Declarative component UI for interactive restoration, progress visualization, and administration (`frontend/src/App.jsx`).
+**Frontend:** React 19, react-router-dom 7, Vite, Tailwind v4, lucide-react icons.
 
-**Testing:**
-- Pytest (`pytest` via `C:\Users\sangh\AppData\Roaming\Python\Python312\Scripts\pytest.exe`) - Automated unit, regression, and identity preservation test suite (`tests/`).
-- Playwright (`@playwright/test^1.62.1`) - End-to-end browser test automation against Chromium, Firefox, and WebKit (`playwright.config.js`, `e2e/`).
+## Model Weights (all vendored under `backend/ai/weights/`)
 
-**Build/Dev:**
-- Vite 8 (`vite^8.1.1`, `@vitejs/plugin-react^6.0.3`) - Frontend dev server and asset bundler (`frontend/vite.config.js`).
-- Tailwind CSS 4 (`tailwindcss^4.3.2`, `@tailwindcss/vite^4.3.2`, `@tailwindcss/postcss^4.3.2`) - Utility-first CSS compiler (`frontend/src/index.css`).
-- Oxlint (`oxlint^1.71.0`) - Fast JavaScript linter (`frontend/package.json`).
+Per policy: weights live in the repo tree, fetched via `urllib.request` direct URLs —
+never HuggingFace hub caches, never ModelScope (`scripts/fetch_reimagine_weights.py`,
+`scripts/fetch_faceid_weights.py`).
 
-## Key Dependencies
+| Family | Files | Used by |
+|---|---|---|
+| LaMa big-lama | `big-lama/`, `big-lama.pt` | Stage 3 inpainting (`lama_restorer.py`) |
+| GFPGAN 1.4 / facexlib | `GFPGANv1.4.pth`, `facelib/` | Stage 8 face restore; `basicsr==1.4.2` pinned — never pip-install DDColor |
+| Real-ESRGAN | `RealESRGAN_x4plus.pth`, `realesr-general-x4v3.pth` | Stage 9 super-resolution |
+| DDColor (ICCV 2023, vendored) | `ddcolor/` | Stage 7 colorization (`backend/ai/colorization/`) |
+| SD1.5 inpaint (fp16 safetensors) | `sd15_inpaint/` | Stage 12 re-imagine generator (MINIMAL tier) |
+| SDXL inpaint (optional) | `sdxl_inpaint/` (absent on this host by design) | STANDARD/AMPLE generator |
+| IP-Adapter (CLIP) | `ip_adapter/models/` + `image_encoder/` | CLIP-crop identity conditioning fallback |
+| **FaceID (H4)** | `ip_adapter_faceid/models/ip-adapter-faceid_sd15.bin` (92 MB), `models_lora/…lora.safetensors` (48 MB), `faceid/w600k_r50.onnx` (166 MB) | ArcFace embeddings + identity-token conditioning (`faceid_embedder.py`, `faceid_adapter.py`) |
+| YuNet / SFace | `sface/yunet_270face.onnx`, `face_recognition_sface_2021dec.onnx` | face detect, identity gate, embedder landmarks |
 
-**Critical:**
-- `opencv-contrib-python==4.12.0.88` - Fundamental image processing, morphology, color space conversion (RGB, LAB), and guided filtering (`cv2.ximgproc.guidedFilter` in `backend/ai/postprocessing/enhancer.py`). Contrib build strictly required.
-- `basicsr==1.4.2` - Backbone vision restoration library pinned strictly for GFPGAN and facexlib interoperability (`backend/requirements.txt`).
-- `facexlib>=0.3.0` & `gfpgan>=1.3.8` - RetinaFace ResNet50 landmark extraction and damage-aware face restoration (`backend/ai/analysis/face_detector.py`, `backend/ai/restoration/face_restorer.py`).
-- `timm>=0.9.0` - ConvNeXt vision transformer backbone used by the vendored DDColor model (`backend/ai/colorization/ddcolor/`).
-- `big-lama.pt` (TorchScript) - Deep Fourier convolution inpainting engine (`backend/ai/restoration/lama_restorer.py`).
-- `RealESRGAN_x4plus.pth` - RRDBNet deep generative 4x super-resolution model (`backend/ai/restoration/super_resolution.py`).
-- `PyWavelets>=1.4.0` - Discrete wavelet transform denoiser for texture preservation (`backend/ai/postprocessing/denoiser.py`).
-- `scikit-image>=0.20.0` & `scipy>=1.10.0` - Scientific image metrics (SSIM, peak signal-to-noise) and optimization math (`backend/ai/validation/identity_validator.py`).
+## Resource Tiers (measured, `resource_profiler.py`)
 
-**Infrastructure:**
-- `pydantic>=2.7` - Request and response schema validation for FastAPI endpoints (`backend/routers/admin_router.py`).
-- `python-multipart>=0.0.9` - Streaming multipart form data parser for multi-megabyte image uploads (`backend/routers/image_router.py`).
-- `huggingface_hub>=0.14.0` - Weights resolution and download utility (`backend/ai/install_ddcolor.py`).
-- `lucide-react^1.24.0` - Icon system for React components (`frontend/src/components/`).
-- `axios^1.18.1` - Promise-based HTTP client for browser requests (`frontend/src/pages/WeightsAdmin.jsx`).
+| Tier | Floors | Generator | Notes |
+|---|---|---|---|
+| MINIMAL | ≥3.0 GB VRAM, ≥2.2 GB RAM | SD1.5, fp32 + sequential CPU offload | measured 0.76 GB VRAM, ~165 s/25-step @512; fp16 diffusion is NaN-broken on this torch/GPU |
+| STANDARD | ≥8/10 GB | SDXL (absent here) | falls back to SD1.5 when weights missing |
+| AMPLE | ≥12/8 GB | SDXL tiled | unverifiable on this host |
+
+Overrides: `REIMAGINE_FORCE_TIER` (never waives floors), `REIMAGINE_IP_SCALE`,
+`REIMAGINE_FACEID=0`, `REIMAGINE_PASS_COSINE`/`REIMAGINE_FLAG_COSINE`.
 
 ## Configuration
 
-**Environment Configuration:**
-- `PYTHONPATH`: Must include `backend/` directory (`$env:PYTHONPATH = "d:\Desktop\kapstone\kapstone\PixRevive\backend"`).
-- `PIXREVIVE_DEBUG`: Set to `1` to enable sequential intermediate stage PNG snapshots and timing metrics saved to `debug_output/`.
-- `PIXREVIVE_ADMIN_TOKEN`: Optional bearer token protecting administrative upload endpoints in `backend/routers/admin_router.py`.
-- `PIXREVIVE_LOAD_SCRATCH_RESTORER`: Flag for optional `zeroscratches` loading (defaults to bypassed).
+- `backend/main.py` — FastAPI app, CORS, static mounts, startup model preload,
+  `/api/health` (readiness = models loaded + `load_errors` empty).
+- `frontend/vite.config.js` — dev server 5173 → API proxy 8000.
+- `.claude/settings.json` + `scripts/hooks/guard_python_runtime.py` — PreToolUse Bash hook
+  mechanically enforcing interpreter rules 1–3.

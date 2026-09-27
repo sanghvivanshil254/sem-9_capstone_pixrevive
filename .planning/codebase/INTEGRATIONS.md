@@ -1,60 +1,49 @@
 # External Integrations
 
-**Analysis Date:** 2026-09-19
+**Analysis Date:** 2026-09-27 (full refresh)
 
-## APIs & External Services
+PixRevive is **network-outbound-minimal**: no SaaS APIs, no databases, no auth providers,
+no webhooks. All AI inference is local. The only outbound network calls are weight
+downloads (one-shot, urllib direct, user-triggered or script-run).
 
-**Model Hubs & Weight Distribution:**
-- Hugging Face Hub - Model weight acquisition for DDColor checkpoint (`piddnad/DDColor-models` -> `backend/ai/weights/ddcolor/ddcolor_modelscope.pth`).
-  - SDK/Client: Direct HTTP via `urllib.request` in `backend/ai/install_ddcolor.py`.
-  - Auth: None (publicly accessible repository weights).
-- GitHub Releases - Model weight hosting for GFPGAN and Real-ESRGAN releases.
-  - SDK/Client: `urllib.request` downloading to `backend/ai/weights/`.
-  - Auth: None (public asset downloads).
+## Weight-Download Endpoints (urllib direct, no hub libraries)
 
-## Data Storage
+| Script | Hosts | Artifacts |
+|---|---|---|
+| `scripts/fetch_reimagine_weights.py` | huggingface.co (`stable-diffusion-v1-5/stable-diffusion-inpainting`, `diffusers/sdxl-inpaint-0.1`, `stabilityai/sdxl-base-1.0`), h94/IP-Adapter | SD1.5/SDXL inpaint repos, CLIP IP-Adapter + image encoder |
+| `scripts/fetch_faceid_weights.py` | huggingface.co (`immich-app/buffalo_l` — recognition/model.onnx mirror), h94/IP-Adapter-FaceID (files at **repo root** — `models/…` 404s) | `faceid/w600k_r50.onnx` (ArcFace 512-d), FaceID adapter `.bin` + LoRA |
+| `backend/ai/colorization/ddcolor_colorizer.py` | GitHub release (opt-in via `PIXREVIVE_DDCOLOR_AUTODOWNLOAD=1`) | DDColor checkpoints |
 
-**Databases:**
-- None - PixRevive does not require an external SQL or NoSQL database (PostgreSQL, SQLite, MySQL, Redis, MongoDB).
-- Metadata Registry: Local JSON flat file (`backend/training_data/registry.json`) maintained for training datasets.
+Download discipline (`.part` temp + `os.replace`, strict manifest listing, size checks);
+the fetcher's strict listing check caught two URL/name errors pre-extraction (measured
+2026-09-27: buffalo_l ships `w600k_r50.onnx`, not "mbt"; FaceID files live at repo root).
 
-**File Storage:**
-- Local filesystem only:
-  - Weight Storage: `backend/ai/weights/` stores all offline neural network checkpoints (`GFPGANv1.4.pth`, `RealESRGAN_x4plus.pth`, `big-lama.pt`, `CodeFormer/codeformer.pth`, `ddcolor/ddcolor_modelscope.pth`).
-  - In-Flight & Temp Results: `backend/temp_results/` stores exported PNG results for task retrieval via `/api/process/{task_id}/result`.
-  - Diagnostic Snapshots: `debug_output/` captures intermediate stage visual outputs and logs when `PIXREVIVE_DEBUG=1`.
-  - Training Data: `backend/training_data/bw` and `backend/training_data/color`.
+## Browser Test Integration
 
-**Caching:**
-- In-memory process cache:
-  - Task state dictionary: `_tasks` in `backend/routers/image_router.py` guarded by `_tasks_lock = threading.Lock()`.
-  - Background ZIP upload tracker: `upload_progress_store` in `backend/routers/admin_router.py` with automated 1-hour TTL pruning.
-  - Model weights singleton: `RestorationPipeline` held in memory by `backend/services/image_service.py` to eliminate per-request cold-starts.
+- Playwright e2e suite (`e2e/`, `playwright.config.js`) **must not download browsers** —
+  CDN driver downloads fail in this environment. Connects to an already-running Chrome via
+  CDP on `127.0.0.1:9222` (`.agents/rules/browser_cdp.md`).
 
-## Authentication & Identity
+## Internal API Surface (frontend ↔ backend)
 
-**Auth Provider:**
-- Custom / Unauthenticated Development Mode:
-  - Current API routes (`/api/process`, `/api/process-stream`, `/api/health`, `/api/admin/*`) are designed for local evaluation, research, and self-hosted execution without mandatory bearer tokens or OAuth.
-  - Admin endpoints optionally verify `X-Admin-Token` if `PIXREVIVE_ADMIN_TOKEN` is configured.
-  - CORS allowlist enforced in `backend/main.py` using `ALLOWED_ORIGINS` to control browser cross-origin requests.
+Frontend talks only to the local FastAPI server — same-origin via Vite proxy in dev:
 
-## Monitoring & Observability
+- `POST /api/process` (sync, form: file + toggles incl. `reimagine`)
+- `POST /api/process-stream` (SSE: `progress`/`complete`/`error` events; `complete`
+  carries the full restoration report JSON)
+- `GET /api/presets` — 6 presets incl. `reimagine_beta`
+- `GET /api/process/{task_id}/evidence` — hybrid evidence-zone overlay PNG
+  (green = original, magenta = re-imagined; "Show what's real" toggle in the UI)
+- `GET /api/health` — readiness contract used by the frontend status pill
+- `backend/routers/admin_router.py` — admin endpoints (token-enforced, tests in
+  `tests/test_admin_router.py`)
 
-**Error Tracking:**
-- Standard Python `logging` module configured across backend components (`backend/routers/image_router.py`, `backend/ai/pipeline/restoration_pipeline.py`).
-- No external third-party APM or exception reporting service (e.g., Sentry, Datadog) is currently integrated.
+## Cross-Component Contracts Worth Knowing
 
-**Logs:**
-- Standard stream logging via Uvicorn console.
-- Diagnostic Logger (`backend/ai/pipeline/debug_logger.py`): When `PIXREVIVE_DEBUG=1`, outputs execution duration timings (`06_timings.txt`), comprehensive pipeline logs (`07_full_log.txt`), and JSON metadata (`08_metadata.json`) in `debug_output/`.
-
-## CI/CD & Deployment
-
-**Hosting:**
-- Self-hosted local workstation or server deployment.
-- Backend runs on `http://127.0.0.1:8000` via Uvicorn ASGI server.
-- Frontend runs on `http://localhost:5173` (Vite dev server) or preview on `http://localhost:4173`.
-
-**CI Pipeline:**
-- GitHub Actions: `.github/workflows/playwright.yml` executes Playwright browser tests on push and pull requests against `main` and `master` branches, uploading `playwright-report` artifacts.
+- **Report JSON** (`backend/ai/report/restoration_report.py`) is the frontend's data
+  source for `RestorationReportCard.jsx` — additive fields only (latest:
+  `reimagine.identity_conditioning ∈ {faceid, clip, none}`, surfaced 2026-09-27).
+- **SSE event ordering**: worker thread → `call_soon_threadsafe` → generator; terminal
+  events are `complete`/`error` only. Consumer must treat anything else as progress.
+- **Health readiness** gates frontend "AI Fully Loaded" pill; lazy models (deblur, ddcolor)
+  report `false` until first use — by design, not failure.
