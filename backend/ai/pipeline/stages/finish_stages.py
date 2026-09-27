@@ -213,14 +213,31 @@ class FinishStagesMixin:
                     pct = float(np.sum(roi > 0) / roi.size * 100)
                     face_pct = pct if face_pct is None else max(face_pct, pct)
             hopeless = frame_pct >= 35.0 or (face_pct is not None and face_pct >= 55.0)
-            record = {
-                "ran": True,
-                "status": "skipped",
-                "reason": (
+            # Two different "did not fire" stories must be told apart
+            # (live-audit find 2026-09-27): "no unrecoverable damage was
+            # detected at all" (detector saw a clean/repairable image — a
+            # 98%-destroyed synthetic probe reported frame 0.0% because its
+            # blotches sat outside the trained damage taxonomy) vs "damage
+            # was detected but is below the hopeless bar" (LaMa already
+            # healed it). Saying "coverage 0.0%" to the first user reads as
+            # "your photo is pristine"; name the detection outcome instead.
+            if destroy is None:
+                reason = (
+                    "no unrecoverable damage was detected — the standard "
+                    "pipeline already handled everything the detector "
+                    "recognized (the beta only fires on hopeless coverage: "
+                    "≥35% of frame or ≥55% of a face)"
+                )
+            else:
+                reason = (
                     "coverage below the hopeless bar "
                     f"(frame {frame_pct:.1f}%, worst face "
                     f"{face_pct if face_pct is not None else 'n/a'})"
-                ),
+                )
+            record = {
+                "ran": True,
+                "status": "skipped",
+                "reason": reason,
                 "coverage": {"frame_pct": round(frame_pct, 2),
                              "worst_face_pct": (round(face_pct, 2)
                                                 if face_pct is not None else None)},

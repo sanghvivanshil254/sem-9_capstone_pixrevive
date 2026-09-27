@@ -73,6 +73,14 @@ export default function RestorationReportCard({ report }) {
                   {report.reimagine.resource.tier} · seed: {report.reimagine.seed ?? '—'}
                 </p>
               )}
+              {report.reimagine.identity_conditioning &&
+                report.reimagine.identity_conditioning !== 'none' && (
+                <p className="text-[11px] text-stone-500 mt-0.5">
+                  identity signal: {report.reimagine.identity_conditioning === 'faceid'
+                    ? 'FaceID (ArcFace embedding of the surviving face)'
+                    : 'CLIP image adapter (damaged-crop reference)'}
+                </p>
+              )}
             </div>
           )}
           {report.reimagine?.mode === 'not_applied' && report.reimagine.reason &&
