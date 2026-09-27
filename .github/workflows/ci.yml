@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  pytest:
+    name: Backend tests (Python 3.12, CPU)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      PYTHONPATH: backend
+      # CI machines have no GPU and no model weights: initialise_models()
+      # records load failures instead of raising, and conftest.py pins
+      # PIXREVIVE_DEVICE=cpu. Both are made explicit here.
+      PIXREVIVE_DEVICE: cpu
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install CPU torch (PyPI build), then runtime deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch torchvision
+          pip install -r backend/requirements.txt
+
+      - name: Run test suite (skip slow)
+        run: >
+          python -m pytest tests/
+          -k "not slow"
+          --no-header -q
+          --junitxml=test-results/pytest.xml
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: pytest-results
+          path: test-results/
+          retention-days: 14
+
+  pyright:
+    name: Pyright basic (backend core)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps for import resolution
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -r backend/requirements.txt
+          pip install pyright
+
+      - name: Run pyright (basic)
+        run: pyright

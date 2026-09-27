@@ -1,10 +1,29 @@
 {
+  // Pyright basic mode over the backend core (plan 6.3 / A-4).
+  // Scope: main.py, routers/, services/, ai/pipeline/, ai/report/ — the layers
+  // CI holds to type discipline. Analysis/ postprocessing/ and vendored
+  // third-party trees are out of scope on purpose (heavy cv2/numpy dynamic
+  // typing; vendored code is upstream-owned).
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "none",
+  "reportMissingModuleSource": "none",
+  "include": [
+    "backend/main.py",
+    "backend/routers",
+    "backend/services",
+    "backend/ai/pipeline",
+    "backend/ai/report"
+  ],
+  "exclude": [
+    "**/node_modules",
+    "**/__pycache__",
+    "backend/ai/colorization/ddcolor"
+  ],
   "pythonVersion": "3.12",
-  "pythonPlatform": "Windows",
-  "pythonPath": "C:/Users/sangh/AppData/Roaming/Python/Python312",
-  "venvPath": "",
-  "extraPaths": ["backend"],
-  "typeCheckingMode": "off",
-  "reportMissingImports": false,
-  "reportMissingModuleSource": false
+  "executionEnvironments": [
+    {
+      "root": "backend",
+      "extraPaths": ["backend"]
+    }
+  ]
 }

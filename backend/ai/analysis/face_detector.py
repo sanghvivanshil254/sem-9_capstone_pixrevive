@@ -14,12 +14,42 @@ class FaceDetector:
         facelib_dir = os.path.join(
             os.path.dirname(os.path.dirname(__file__)), "weights", "facelib"
         )
+        self._facelib_dir = facelib_dir
         # Using retinaface for primary deep detection
         self.det_net = init_detection_model(
             'retinaface_resnet50', half=False, device=self.device, model_rootpath=facelib_dir
         )
+
+    def unload(self) -> None:
+        """Free the RetinaFace ResNet50 (~1.9 GB fp32 VRAM; Stage 12 bridge).
+
+        Lazily reloaded on the next detect() call — the detector is used
+        early in each request, before Stage 12 releases it again.
+        """
+        self.det_net = None
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def _ensure_det_net(self) -> bool:
+        if self.det_net is not None:
+            return True
+        try:
+            self.det_net = init_detection_model(
+                'retinaface_resnet50', half=False, device=self.device,
+                model_rootpath=self._facelib_dir,
+            )
+            return self.det_net is not None
+        except Exception as exc:  # noqa: BLE001 - degrade, never crash
+            import logging
+            logging.getLogger(__name__).warning(
+                "FaceDetector reload failed: %s", exc)
+            return False
         
     def detect(self, context: PipelineContext):
+        if not self._ensure_det_net():
+            context.add_log("Face detect: RetinaFace unavailable — skipped.")
+            return
         img_np = context.working_image
         img_h, img_w = img_np.shape[:2]
         

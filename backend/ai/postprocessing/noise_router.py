@@ -141,6 +141,22 @@ class NoiseClassifier:
         # fell through both detectors and triggered nothing. Decouple the two.
         gaussian_like = random_score > 0.18
 
+        # Degenerate-input guard: a content region with essentially no texture
+        # cannot exhibit compression, banding, periodic interference, ringing,
+        # or speckle — every ratio-based detector divides by ~zero there and
+        # reports spurious positives (measured 2026-09-25: a flat scanned figure
+        # fired seven noise families; a flat marginless control fired two).
+        # Texture variance is measured over the content region, so real photos
+        # (var in the hundreds+) are never affected.
+        if texture_var < 2.0 and residual_std < 0.5:
+            periodic_score = 0.0
+            striping_score = 0.0
+            blocking_score = 0.0
+            ringing_score = 0.0
+            banding_score = 0.0
+            quantization_score = 0.0
+            speckle_score = 0.0
+
         family_scores = {
             "random": random_score,
             "impulse": _normalize(max(impulse_ratio, random_impulse_ratio * 0.35), 0.004, 0.06),

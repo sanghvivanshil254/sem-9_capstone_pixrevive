@@ -1,8 +1,9 @@
 """Colorization stage: DDColor transform + chrominance diffusion
 (mixin on RestorationPipeline; see stage_registry.py)."""
 
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
+import threading
 import cv2
 import numpy as np
 import torch
@@ -28,6 +29,14 @@ _MIN_PIX_COUNT = 1000              # skip the guard on tiny canvases (noise-domi
 
 
 class ColorStagesMixin:
+    if TYPE_CHECKING:  # pragma: no cover — host-object contract only
+        from ai.colorization.ddcolor_colorizer import DDColorColorizer
+
+    # Host-object contract (pyright, plan 6.3): these attributes live on
+    # RestorationPipeline, which composes this mixin.
+    _colorizer_ready: threading.Event
+    colorizer: "DDColorColorizer"
+
     @staticmethod
     def _detect_colorization_hallucination(rgb: np.ndarray) -> bool:
         """Q-3: pathological single-hue wash detector (>88% within one hue bin).
@@ -104,6 +113,14 @@ class ColorStagesMixin:
                     context.end_timer("colorization")
                     DebugLogger.save_stage(context, "06_after_colorize")
                     return
+
+                # Positive evidence flag for the Restoration Report: the
+                # colorization claim ("colors added by AI") must rest on
+                # colorization actually having RUN, not on the input being
+                # B&W/sepia. Measured 2026-09-27: colorize=false on a sepia
+                # image still produced the disclaimer because the report
+                # inferred from color_type alone.
+                context.image_metadata["colorization_applied"] = True
 
                 # ── Seamless chrominance propagation in inpainted tear/crack zones ──
                 # DDColor can hallucinate vivid or inconsistent chromatic tones inside

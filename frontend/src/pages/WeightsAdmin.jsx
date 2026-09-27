@@ -6,6 +6,7 @@ import {
   Image as ImageIcon, ChevronLeft, ChevronRight, FileArchive, RefreshCw, Search
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { API_BASE as API_URL, backendUrl as BACKEND_URL } from '../services/api';
 import './WeightsAdmin.css';
 
 export default function WeightsAdmin() {
@@ -46,7 +47,7 @@ export default function WeightsAdmin() {
   // Fetch weights active status from backend
   const fetchWeightsStatus = useCallback(async () => {
     try {
-      const res = await axios.get('http://localhost:8000/api/admin/weights/status');
+      const res = await axios.get(API_URL + '/admin/weights/status');
       setWeightsStatus(res.data);
     } catch (err) {
       console.error("Failed to fetch weights status:", err);
@@ -56,7 +57,7 @@ export default function WeightsAdmin() {
   // Fetch training status and update logs
   const fetchTrainingStatus = useCallback(async () => {
     try {
-      const res = await axios.get('http://localhost:8000/api/admin/training/status');
+      const res = await axios.get(API_URL + '/admin/training/status');
       const data = res.data;
       setTrainingState(data);
       
@@ -133,7 +134,7 @@ export default function WeightsAdmin() {
     
     try {
       setMsg('');
-      await axios.post('http://localhost:8000/api/admin/training/start');
+      await axios.post(API_URL + '/admin/training/start');
       setIsTraining(true);
       fetchTrainingStatus();
     } catch (err) {
@@ -144,7 +145,7 @@ export default function WeightsAdmin() {
 
   const fetchPairs = useCallback(async (page, query = '') => {
     try {
-      const res = await axios.get(`http://localhost:8000/api/admin/training-data/pairs?page=${page}&limit=6&q=${encodeURIComponent(query)}`);
+      const res = await axios.get(`${API_URL}/admin/training-data/pairs?page=${page}&limit=6&q=${encodeURIComponent(query)}`);
       setPairs(res.data.pairs);
       setTotalPages(res.data.total_pages);
       setTotalPairs(res.data.total);
@@ -182,7 +183,7 @@ export default function WeightsAdmin() {
     formData.append('model_type', type);
 
     try {
-      const response = await axios.post('http://localhost:8000/api/admin/weights/upload', formData, {
+      const response = await axios.post(API_URL + '/admin/weights/upload', formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
       setStatus('success');
@@ -396,7 +397,7 @@ export default function WeightsAdmin() {
     
     const interval = setInterval(async () => {
       try {
-        const res = await axios.get(`http://localhost:8000/api/admin/training-data/upload-progress?upload_id=${id}`);
+        const res = await axios.get(`${API_URL}/admin/training-data/upload-progress?upload_id=${id}`);
         const { status, progress, message } = res.data;
         
         setUploadProgress(progress);
@@ -447,7 +448,7 @@ export default function WeightsAdmin() {
     formData.append('file', file);
 
     try {
-      const response = await axios.post('http://localhost:8000/api/admin/training-data/upload', formData, {
+      const response = await axios.post(API_URL + '/admin/training-data/upload', formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
       const { upload_id } = response.data;
@@ -477,7 +478,7 @@ export default function WeightsAdmin() {
     formData.append('color_file', newColorFile);
 
     try {
-      await axios.post('http://localhost:8000/api/admin/training-data/pairs', formData, {
+      await axios.post(API_URL + '/admin/training-data/pairs', formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
       setAddStatus('success');
@@ -513,7 +514,7 @@ export default function WeightsAdmin() {
 
     try {
       setMsg(`Updating ${type === 'bw' ? 'Black & White' : 'Color'} image...`);
-      await axios.put(`http://localhost:8000/api/admin/training-data/pairs/${pairId}`, formData, {
+      await axios.put(`${API_URL}/admin/training-data/pairs/${pairId}`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
       setMsg(`Successfully updated ${type === 'bw' ? 'B&W' : 'Color'} image.`);
@@ -530,7 +531,7 @@ export default function WeightsAdmin() {
     }
 
     try {
-      await axios.delete(`http://localhost:8000/api/admin/training-data/pairs/${pairId}`);
+      await axios.delete(`${API_URL}/admin/training-data/pairs/${pairId}`);
       setMsg('Successfully deleted training pair.');
       
       setSelectedIds(prev => prev.filter(id => id !== pairId));
@@ -554,7 +555,7 @@ export default function WeightsAdmin() {
     
     try {
       setMsg(`Deleting ${selectedIds.length} pairs...`);
-      await axios.post('http://localhost:8000/api/admin/training-data/pairs/batch-delete', { ids: selectedIds });
+      await axios.post(API_URL + '/admin/training-data/pairs/batch-delete', { ids: selectedIds });
       setMsg(`Successfully deleted ${selectedIds.length} image pairs.`);
       setSelectedIds([]);
       
@@ -583,7 +584,7 @@ export default function WeightsAdmin() {
     
     try {
       setMsg("Wiping entire dataset...");
-      await axios.delete('http://localhost:8000/api/admin/training-data/pairs/all');
+      await axios.delete(API_URL + '/admin/training-data/pairs/all');
       setMsg("Successfully cleared training dataset.");
       setSelectedIds([]);
       setCurrentPage(1);
@@ -1222,7 +1223,7 @@ export default function WeightsAdmin() {
                         {/* B&W Side */}
                         <div className="relative group overflow-hidden rounded-lg border border-stone-300 aspect-square bg-stone-200">
                           <img 
-                            src={`http://localhost:8000${pair.bw_url}`} 
+                            src={BACKEND_URL(pair.bw_url)} 
                             alt="Black & White" 
                             className="w-full h-full object-cover" 
                           />
@@ -1249,7 +1250,7 @@ export default function WeightsAdmin() {
                         {/* Color Side */}
                         <div className="relative group overflow-hidden rounded-lg border border-stone-300 aspect-square bg-stone-200">
                           <img 
-                            src={`http://localhost:8000${pair.color_url}`} 
+                            src={BACKEND_URL(pair.color_url)} 
                             alt="Color Target" 
                             className="w-full h-full object-cover" 
                           />

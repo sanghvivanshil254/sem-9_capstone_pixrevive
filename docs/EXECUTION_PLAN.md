@@ -1,5 +1,9 @@
 # PixRevive — Execution Plan (v2 — taxonomy-aware)
 
+> **STATUS (2026-09-25): COMPLETE.** All phases 0–6 implemented, including the
+> decision gates (5.2 archive, 5.4 prune) and frontend items (5.5–5.7).
+> See [CHANGELOG.md](../CHANGELOG.md).
+
 Turns `docs/DEAD_CODE_REMOVAL.md` (D#), `docs/IMPROVEMENT_SUGGESTIONS.md`
 (U-#/Q-#/A-#/O-#), and `docs/DAMAGE_TAXONOMY_MAPPING.md` (T#) into an ordered, verifiable
 work sequence. Each phase ends with a **green gate** — do not advance until it passes.
@@ -189,3 +193,97 @@ renders for a case6 (severe tear) upload showing unrecoverable-content flag.
 health, build the measuring ruler, ship the Restoration Report, add CI. The taxonomy
 coverage items (4B) and structural refactors (3) are what make PixRevive *better*; this
 path is what makes it *credible*.
+
+---
+
+## Phase H1/H2 — Hybrid Evidence-Preserving Diffusion (post-1.0, status as of 2026-09-27)
+
+Design: [HYBRID_DIFFUSION_DESIGN.md](HYBRID_DIFFUSION_DESIGN.md) v2. Goal: when damage is so
+extensive that any "repair" is fabrication anyway, re-imagine ONLY the destroyed regions with a
+diffusion inpainting model while every surviving pixel is composited back bytewise
+(`out[E] == original[E]`), gated by an identity check that can roll the whole thing back.
+
+**Status: H1 + H2 complete (code, tests, UI); H3 (IP_ADAPTER_SCALE calibration) open.**
+
+| Item | State |
+|---|---|
+| Resource tiering (`resource_profiler.py`) | ✅ 4 tiers from measured VRAM/RAM; MINIMAL pins fp32 + sequential CPU offload (fp16 diffusion is NaN-broken on this host — see design §4.5); `REIMAGINE_FORCE_TIER` override never waives floors. 37 tests |
+| Re-imagine engine (`reimaginer.py`) | ✅ SD1.5 (DDIM) / SDXL (unhealthy on 4 GB — pinned off), IP-Adapter identity conditioning, evidence composite with bytewise assertion, feathered 1024→4×704 tile grid, NaN self-heal (black>60% → seed+1 → SD1.5 fallback), SFace rollback ladder (≥0.42 pass / 0.36–0.42 flag / <0.36 rollback, ≤2 re-rolls). 23 tests |
+| Identity gate (`face_identity_gate.py`) | ✅ YuNet + SFace, thresholds verified on case9 self-similarity (>0.95). 11 tests |
+| Stage 12 wiring | ✅ `stage_registry` (pct 99, route gate `enable_reimagine`), coverage gate (≥35% frame or ≥55% worst-face), report disclosure block (hybrid / not_applied + skip reasons), `reimagine` Form flag on both endpoints, `reimagine_beta` preset. 18 tests |
+| Frontend (H2) | ✅ OptionsPanel beta checkbox + tooltip, `useRestorationJob` flag & preset mapping, report hybrid card + skip-note, `/api/presets` refetch loop fixed |
+| "Show what's real" overlay (§7) | ✅ hybrid runs persist the colorized evidence-zone map (`temp_results/{task_id}_evidence.png`, served at `/api/process/{id}/evidence`); the restored pane gains a "Show what's real" toggle stacking the pixel-aligned overlay over the output |
+| Full suite | ✅ 312 passed, 1 skipped, 105 subtests |
+
+**Integration findings (measured, all fixed):** IP-Adapter folder must mirror the h94 repo
+layout (`models/image_encoder` inside `models/`, not beside it); the encoder ships without
+`config.json` → transformers guesses ViT-B and dies on size mismatch (config vendored in
+`reimaginer.py` and self-healed onto disk); `enable_attention_slicing()` must run BEFORE
+`load_ip_adapter()` or SlicedAttnProcessor wipes the IP-Adapter processors and the UNet dies
+on `'tuple' object has no attribute 'shape'`; diffusers 0.40 has no `pipe.ip_adapter`
+attribute — load success is tracked in engine state instead.
+
+**E2E on case9 (60% synthetic mask):** unconditioned generation correctly rolls back 3/3
+attempts (best SFace cosine −0.099). With IP-Adapter conditioning active (scale 0.5), the
+best cosine rises to **0.340** — a huge identity gain but still inside the 0.36–0.42 flag
+band's wrong side, so the gate honestly rolls back 3/3 attempts and records
+`skipped_degraded` with `evidence_preserved: true` (572 s). This is the measured H1-tail
+finding that motivates H3: `IP_ADAPTER_SCALE` 0.5 is not enough for a 60%-destroyed face;
+calibration (and possibly threshold re-justification) is the next task.
+See `test_artifacts/reimagine_e2e4.log` / `test_artifacts/reimagine_e2e/case9_record.json`.
+
+**H3 (next):** calibrate `IP_ADAPTER_SCALE` (0.5 default) on case9 + real damage; decide
+whether the pass threshold can hold at 0.42 with IP conditioning; consider full-image
+SFace verification instead of largest-face only.
+
+---
+
+## Phase H3 — identity hardening + calibration (2026-09-27)
+
+| Item | State |
+|---|---|
+| All-faces identity verification | ✅ `SFaceIdentityGate.compare(max_faces=0)` verifies EVERY YuNet face; worst per-face cosine governs (drift on any face, not just the biggest, can roll back). Stage 12 now gates on it. `per_face` scores disclosed in the report block |
+| Env-tunable ladder | ✅ `REIMAGINE_PASS_COSINE` / `REIMAGINE_FLAG_COSINE` / `REIMAGINE_IP_SCALE` overrides (never widen the gate silently — they are calibration knobs, not waivers); `reimagine(rerolls=N)` param bounds the ladder per call |
+| Calibration sweep | ❌ **Negative result (measured, honest).** 8 E2E points on case9 (60%-destroy mask): seed variance (SFace cosine 0.21–0.38 across seeds) dominates any scale effect (0.5→1.0 spread ≈0.03 on a fixed seed; per-scale means 0.22–0.30). No IP-Adapter scale clears the 0.36 rollback floor on hopeless coverage — with 3 attempts per run the gate correctly refuses, and the bytewise evidence composite means the fallback (standard restoration) ships instead |
+| Verdict | `IP_ADAPTER_SCALE` stays **0.5** (diffusers prior; higher scales showed no identity gain and over-bake the damaged reference). Conditioning still matters: unconditioned cosine −0.099 vs conditioned 0.21–0.38. The structural fix is FaceID-class identity conditioning (H4-class), not more scale tuning |
+
+Harness: `scripts/sweep_ip_scale.py` (fresh python subprocess per point — the fp32 weights
+never return to the OS from a live interpreter, so in-process sweeps self-refuse at the RAM
+floor; fixed seed across points so scale is the only variable). Raw data:
+`test_artifacts/reimagine_sweep/`.
+
+### Integration audit (2026-09-27) — 5 live-path bugs found and fixed
+
+The full chain was exercised end-to-end through the real API (heavy-damage probe with
+`reimagine=true`); each failure below was reproduced live before being fixed:
+
+1. **Report colorization lie** — `colorize=false` on sepia input still emitted "colors
+   added by AI" (the report inferred from `color_type` alone). Fix: `colorization_applied`
+   is seeded by `restore()` at flag time and flipped by Stage 6 on success; the claim now
+   requires positive evidence, and a disabled-colorization run gets an explicit
+   "colorization was disabled — monochrome kept" disclosure.
+2. **Stage 12 could never run inside the server** — the standard models held ~2.4 GB so
+   only 0.94 GB stayed free; the resource gate refused every live attempt (standalone E2E
+   never saw this). Fix: Stage 12's `_release_standard_models()` frees LaMa/GFPGAN/
+   Real-ESRGAN/DDColor/RetinaFace/U-Net before the engine profiles (0.94 → 2.88+ GB) and
+   `_restore_standard_models()` reloads via the canonical `_reload_models_on` path in a
+   finally block. Measured live: 2.88 GB was still refused → with detectors released the
+   gate passes and the hybrid run completed (`mode: hybrid-restoration, done`).
+3. **CWD-relative weights paths** — `reimaginer.WEIGHTS` and the gate's `WeightsDirDefault`
+   resolved from the process CWD; the server runs with `cwd=backend/`, so every live run
+   reported "sd15 weights missing" while root-launched scripts worked. Fix: both anchored
+   to their module files.
+4. **Faceless probe crashed generation** — a loaded IP-Adapter makes the UNet require
+   embeds; when YuNet finds no face in the input, nothing conditions ON, and generation
+   crashed (`'NoneType' is not iterable`). Fix: two-way adapter sync in `_generate`
+   (unload when the image has no face, reload when one appears). Previously only the
+   one-directional case was handled.
+5. **Stage-level errors were invisible** — the stage's exception branch recorded an
+   `error` key the report never surfaced. Fix: full traceback logged via `logger.exception`
+   and the report block now emits `status: "error"` with the reason.
+
+Also: a stale skip reason no longer lingers on a success record. Full suite after the
+audit: **320 passed, 1 skipped, 105 subtests**. Known host quirk (documented, not a code
+bug): running the pytest suite while the backend server holds torch weights can segfault
+the runner (access violation inside torch model init under memory pressure) — pause the
+server for suite runs, as was done for the green run above.

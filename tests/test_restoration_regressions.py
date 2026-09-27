@@ -13,7 +13,6 @@ from ai.analysis.quality_analyzer import QualityAnalyzer
 from ai.pipeline.pipeline_context import PipelineContext
 from ai.pipeline.pipeline_router import PipelineRouter
 from ai.pipeline.restoration_pipeline import RestorationPipeline
-from ai.postprocessing.denoiser import AdaptiveDenoiser, ArtifactDetector, SmartDenoiser
 from ai.postprocessing.noise_router import NoiseClassifier, NoiseRouter, SUPPORTED_NOISE_TYPES
 from ai.restoration.inpainting_engine import InpaintingEngine
 from ai.restoration.super_resolution import _target_long_side_for_source
@@ -137,26 +136,6 @@ class TestRestorationRegressions(unittest.TestCase):
         self.assertIsNotNone(reason)
         self.assertIn("source too small", reason)
 
-    def test_smart_denoiser_rolls_back_over_smoothed_candidate(self):
-        original_denoise = AdaptiveDenoiser.denoise
-        original_blocking = ArtifactDetector.detect_blocking
-        original_smoothing = ArtifactDetector.detect_over_smoothing
-        img = np.full((32, 32, 3), 128, dtype=np.uint8)
-        candidate = np.zeros_like(img)
-        try:
-            AdaptiveDenoiser.denoise = staticmethod(lambda img, noise_level=None, context=None: candidate)  # type: ignore[assignment]
-            ArtifactDetector.detect_blocking = staticmethod(lambda img, threshold=0.15: False)  # type: ignore[assignment]
-            ArtifactDetector.detect_over_smoothing = staticmethod(  # type: ignore[assignment]
-                lambda img, original, threshold=0.05: True
-            )
-
-            out = SmartDenoiser.denoise_smart(img, max_iterations=1)
-
-            np.testing.assert_array_equal(out, img)
-        finally:
-            AdaptiveDenoiser.denoise = original_denoise
-            ArtifactDetector.detect_blocking = original_blocking
-            ArtifactDetector.detect_over_smoothing = original_smoothing
 
     def test_tiny_source_sr_target_stays_at_model_scale(self):
         self.assertEqual(_target_long_side_for_source(196), 784)

@@ -46,21 +46,21 @@
       "route_gate": null
     },
     {
-      "id": "cast_fix",
-      "name": "Dye-fade color-cast rebalancing",
-      "method": null,
-      "progress_pct": 11,
-      "progress_message": "Rebalancing faded print colors...",
-      "debug_snapshot": null,
-      "route_gate": null
-    },
-    {
       "id": "face_detect",
       "name": "Early face & landmark detection",
       "method": "_stage_4_face_detect",
-      "progress_pct": 12,
+      "progress_pct": 11,
       "progress_message": "Detecting faces and facial landmarks...",
       "debug_snapshot": "04_after_face_detect",
+      "route_gate": null
+    },
+    {
+      "id": "cast_fix",
+      "name": "Dye-fade color-cast rebalancing",
+      "method": null,
+      "progress_pct": 12,
+      "progress_message": "Rebalancing faded print colors...",
+      "debug_snapshot": null,
       "route_gate": null
     },
     {
@@ -160,6 +160,15 @@
       "progress_pct": 98,
       "progress_message": "Applying projector exhibition grading...",
       "debug_snapshot": "10b_after_projector_grade",
+      "route_gate": null
+    },
+    {
+      "id": "output_verify",
+      "name": "Closed-loop output verification",
+      "method": "_stage_11_output_verify",
+      "progress_pct": 99,
+      "progress_message": "Verifying the restored output...",
+      "debug_snapshot": "11_after_output_verify",
       "route_gate": null
     }
   ],

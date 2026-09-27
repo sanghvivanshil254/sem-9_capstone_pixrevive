@@ -121,7 +121,9 @@ e2e/                          Playwright specs (run against CDP-attached Chrome)
 - CORS is an explicit allowlist (`allow_credentials=True` forbids `*`); override via `PIXREVIVE_CORS_ORIGINS`.
 - `/static/training_data` is mounted from disk.
 - File-type and size validation live in `image_router.py` (`ALLOWED_MIME_TYPES`, `MAX_FILE_SIZE`).
-- A GPU semaphore serializes restorations so concurrent requests queue instead of OOM-ing.
+- A GPU semaphore serializes restorations so concurrent requests queue instead of OOM-ing
+  (`image_router.py` `_gpu_semaphore(1)`; VRAM-aware concurrency was considered under
+  O-2 and deliberately kept as a plain semaphore — a 4 GB card serves one job at a time).
 
 ### Key Python Packages (`backend/requirements.txt`)
 

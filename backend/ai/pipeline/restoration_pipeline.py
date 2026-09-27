@@ -55,6 +55,7 @@ from ai.pipeline.pipeline_context import PipelineContext
 from ai.pipeline.pipeline_router import PipelineRouter
 from ai.pipeline.stage_registry import STAGE_REGISTRY
 from ai.preprocessing.image_normalizer import ImageNormalizer
+from ai.preprocessing.halftone_suppressor import HalftoneSuppressor
 from ai.analysis.quality_analyzer import QualityAnalyzer
 from ai.analysis.face_detector import FaceDetector
 from ai.damage.enhanced_detector import EnhancedDamageDetector
@@ -114,18 +115,17 @@ class RestorationPipeline(
         self.inpainting_engine: Optional[InpaintingEngine] = None
         self._lama = None
         self._deblur = None  # T-3: lazy — loads on first gate-fire only
-        self._orchestrator: Optional[Any] = None
 
         if load_models:
             self.initialise_models()
-
-    @property
-    def orchestrator(self):
-        """Lazy-loaded PhotoOrchestrator instance."""
-        if self._orchestrator is None:
-            from ai.orchestrator.orchestrator import PhotoOrchestrator
-            self._orchestrator = PhotoOrchestrator(face_detector=self.face_detector)
-        return self._orchestrator
+        else:
+            # No loaders will ever run: resolve the readiness events NOW so
+            # stages that wait on them (colorization's 60s timeout, Stage 7's
+            # model wait) fail fast into their graceful-degradation paths
+            # instead of burning the full timeout per run. Found by the
+            # robustness audit 2026-09-25.
+            self._colorizer_ready.set()
+            self._models_ready.set()
 
     def initialise_models(self) -> None:
         """Load deep learning models asynchronously in background threads."""
@@ -324,8 +324,8 @@ class RestorationPipeline(
         enable_colorization: bool = True,
         enable_face_restore: bool = True,
         enable_sr: bool = True,
+        enable_reimagine: bool = False,
         on_progress: Optional[Callable[[str, int, str], None]] = None,
-        use_orchestrator: Optional[bool] = None,
     ) -> np.ndarray:
         """
         Execute full restoration pipeline with exhibition grading and per-stage diagnostic snapshots.
@@ -338,9 +338,11 @@ class RestorationPipeline(
             enable_colorization: Enable DDColor colorization for B&W/sepia
             enable_face_restore: Enable GFPGAN face restoration
             enable_sr: Enable Real-ESRGAN x4 super-resolution and post-SR sharpening
+            enable_reimagine: Opt-in beta (Phase H1): re-imagine unrecoverable
+                damage regions with evidence-preserving diffusion after the
+                standard chain (docs/HYBRID_DIFFUSION_DESIGN.md)
             on_progress: Progress callback (stage_name, percent, message)
-            use_orchestrator: Optional bool to execute via Two-Tier PPCAV PhotoOrchestrator
-            
+
         Returns:
             Restored RGB uint8 numpy array at full 4x resolution
         """
@@ -351,6 +353,20 @@ class RestorationPipeline(
             img_rgb = np.array(image_input.convert("RGB"))
         elif isinstance(image_input, np.ndarray):
             img_rgb = image_input.copy()
+            # Robustness audit (2026-09-25): raw-array callers can hand us
+            # 2D grayscale or float arrays (NaN included). The HTTP path can
+            # never produce these (PIL .convert("RGB") normalizes), but the
+            # library API must not crash with raw OpenCV channel/depth
+            # errors — normalize exactly like the bytes path does.
+            if img_rgb.ndim == 2:
+                img_rgb = cv2.cvtColor(img_rgb, cv2.COLOR_GRAY2RGB)
+            elif img_rgb.ndim == 3 and img_rgb.shape[2] == 4:
+                img_rgb = cv2.cvtColor(img_rgb, cv2.COLOR_RGBA2RGB)
+            if img_rgb.dtype != np.uint8:
+                arr = np.nan_to_num(img_rgb.astype(np.float32), nan=0.0, posinf=255.0, neginf=0.0)
+                img_rgb = np.clip(arr, 0, 255).astype(np.uint8)
+            if img_rgb.ndim != 3 or img_rgb.shape[2] != 3 or img_rgb.size == 0:
+                raise ValueError(f"Unsupported image array shape: {img_rgb.shape}")
         else:
             raise ValueError(f"Unsupported image input type: {type(image_input)}")
 
@@ -426,25 +442,9 @@ class RestorationPipeline(
             "enable_colorization": enable_colorization,
             "enable_face_restore": enable_face_restore,
             "enable_sr": enable_sr,
+            "enable_reimagine": enable_reimagine,
         })
         self.last_context = context
-
-        _should_use_orchestrator = (
-            use_orchestrator
-            if use_orchestrator is not None
-            else os.getenv("PIXREVIVE_USE_ORCHESTRATOR", "0").lower() in ("1", "true")
-        )
-        if _should_use_orchestrator:
-            context.pipeline_flags["use_orchestrator"] = True
-            return self.orchestrator.run(
-                context,
-                progress_callback=on_progress,
-                enable_repair=enable_repair,
-                enable_denoise=enable_denoise,
-                enable_colorization=enable_colorization,
-                enable_face_restore=enable_face_restore,
-                enable_sr=enable_sr,
-            )
 
         DebugLogger.save_stage(context, "00_input_raw")
 
@@ -488,7 +488,7 @@ class RestorationPipeline(
             from ai.colorization.color_refiner import ColorArtifactReducer as _CAR
             color_type = context.image_metadata.get("color_type", "color")
             if on_progress:
-                on_progress("cast_fix", 11, "Rebalancing faded print colors...")
+                on_progress("cast_fix", 12, "Rebalancing faded print colors...")
             fixed_img, cast_info = _CAR.rebalance_dye_fade(
                 context.working_image, color_type=color_type, context=context
             )
@@ -502,6 +502,7 @@ class RestorationPipeline(
         context.add_log(
             f"PipelineRouter: '{route['pipeline_name']}' - {route['description']}"
         )
+        context.image_metadata["route_name"] = route.get("pipeline_name", "unknown")
         flags = self._effective_stage_flags(
             route,
             context.image_metadata.get("color_type", "color"),
@@ -516,6 +517,14 @@ class RestorationPipeline(
         run_face = flags["run_face"]
         run_colorize_flag = flags["run_colorize"]
         run_sr = flags["run_sr"]
+        # Report evidence contract: record the colorization DECISION before
+        # dispatch. Stage 6 flips it to True only on success, so the report's
+        # "colors added by AI" claim always rests on what actually ran —
+        # colorize=false on a sepia image can no longer emit the disclaimer
+        # (measured 2026-09-27 via the API with the pre-fix build).
+        context.image_metadata["colorization_applied"] = False
+        if not run_colorize_flag:
+            context.image_metadata["colorization_skipped_by_flag"] = True
 
         # -- Stage 2: Multi-Scale Fracture Masking (returns the damage mask) -----
         damage_mask = np.zeros(img_rgb.shape[:2], dtype=np.uint8)
@@ -671,6 +680,37 @@ class RestorationPipeline(
 
         DebugLogger.save_debug_images(context)
 
+        # Plan 5.3 (default=wire): IdentityValidator runs as a debug-only,
+        # advisory post-SR check — it never rolls the canvas back (that
+        # failure mode is documented in docs/restoration_debug_plan.md §9);
+        # it only feeds an identity-risk flag into the Restoration Report.
+        if os.getenv("PIXREVIVE_DEBUG", "").strip() in ("1", "true", "True"):
+            try:
+                from ai.validation.identity_validator import IdentityValidator
+
+                identity_metrics = IdentityValidator().validate_context(context)
+                if not identity_metrics.identity_preserved:
+                    warnings_list = context.image_metadata.setdefault("warnings", [])
+                    if "identity_risk" not in warnings_list:
+                        warnings_list.append("identity_risk")
+                    context.add_log(
+                        "[DEBUG] IdentityValidator: landmark stability below threshold "
+                        "— flagged identity_risk in the restoration report."
+                    )
+            except Exception as exc:
+                logger.warning("IdentityValidator debug check failed: %s", exc)
+
+        # -- T-2 Restoration Report (plan 5.1): machine-readable honesty layer --
+        # Classifies the run's evidence into recovered / reconstructed /
+        # flagged and stores it in metadata; the API layer forwards it to the
+        # UI's collapsible Restoration Report card.
+        try:
+            from ai.report.restoration_report import build_restoration_report
+
+            context.image_metadata["restoration_report"] = build_restoration_report(context)
+        except Exception as exc:
+            logger.warning("Restoration report generation failed: %s", exc)
+
         if on_progress:
             on_progress("complete", 100, "Restoration complete!")
 
@@ -685,10 +725,10 @@ class RestorationPipeline(
         enable_colorization: bool = True,   # Fix 13: aligned with restore() defaults
         enable_denoise: bool = True,         # Fix 13: aligned with restore() defaults
         enable_sr: bool = True,
+        enable_reimagine: bool = False,      # Phase H1 opt-in beta
         device_preference: str = "auto",
         progress_callback: Optional[Callable[[str, int, str], None]] = None,
         on_progress: Optional[Callable[[str, int, str], None]] = None,
-        use_orchestrator: Optional[bool] = None,
         **kwargs: Any,
     ) -> bytes:
         """
@@ -705,8 +745,7 @@ class RestorationPipeline(
             device_preference: Execution device preference ('auto', 'cuda', 'cpu')
             progress_callback: Callback for progress updates (stage, percent, message)
             on_progress: Alias for progress_callback
-            use_orchestrator: Optional bool to execute via Two-Tier PPCAV PhotoOrchestrator
-            
+
         Returns:
             PNG encoded bytes of the restored image at full 4x resolution
         """
@@ -724,8 +763,8 @@ class RestorationPipeline(
             enable_colorization=enable_colorization,
             enable_face_restore=enable_restoration,
             enable_sr=enable_sr,
+            enable_reimagine=enable_reimagine,
             on_progress=cb,
-            use_orchestrator=use_orchestrator,
         )
 
         out_pil = Image.fromarray(restored_rgb)

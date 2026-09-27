@@ -17,6 +17,7 @@ import os
 import threading
 import time
 import uuid
+from typing import Any, Dict
 from fastapi import APIRouter, UploadFile, File, HTTPException, Form
 from fastapi.responses import Response, StreamingResponse, FileResponse
 from services.image_service import ImageService
@@ -37,6 +38,92 @@ os.makedirs(_results_dir, exist_ok=True)
 
 # Task TTL: prune tasks older than 30 min to prevent unbounded memory growth
 _TASK_TTL_SECONDS = 1800
+
+# Q-8: named restoration presets. Each maps 1:1 onto the pipeline toggles the
+# UI exposes; unknown keys are ignored by the backend, so this dict is the
+# single source of truth for what a preset means.
+PRESETS: Dict[str, Dict[str, Any]] = {
+    "default": {
+        "label": "Default",
+        "description": "Full pipeline: repair, denoise, colorize, faces, 4x upscale.",
+        "toggles": {
+            "enable_repair": True,
+            "enable_denoise": True,
+            "enable_colorization": True,
+            "enable_face_restore": True,
+            "enable_sr": True,
+        },
+    },
+    "fast": {
+        "label": "Fast",
+        "description": "Repair + denoise + faces, no colorization or upscaling.",
+        "toggles": {
+            "enable_repair": True,
+            "enable_denoise": True,
+            "enable_colorization": False,
+            "enable_face_restore": True,
+            "enable_sr": False,
+        },
+    },
+    "repair_only": {
+        "label": "Repair only",
+        "description": "Structural inpainting of tears and specks; everything else off.",
+        "toggles": {
+            "enable_repair": True,
+            "enable_denoise": False,
+            "enable_colorization": False,
+            "enable_face_restore": False,
+            "enable_sr": False,
+        },
+    },
+    "colorize_only": {
+        "label": "Colorize only",
+        "description": "DDColor colorization on an otherwise untouched scan.",
+        "toggles": {
+            "enable_repair": False,
+            "enable_denoise": False,
+            "enable_colorization": True,
+            "enable_face_restore": False,
+            "enable_sr": False,
+        },
+    },
+    # Phase H1/H2 — opt-in beta preset: the full pipeline PLUS re-imagine.
+    # The re-imagine stage itself still gates on hopeless coverage (>= 35% of
+    # frame / >= 55% of a face) and on available resources; opting in only
+    # permits it. Costs several minutes per photo when it fires.
+    "reimagine_beta": {
+        "label": "Re-imagine (beta)",
+        "description": (
+            "Full pipeline + AI re-imagining of unrecoverable regions "
+            "(evidence-preserving, disclosed in the report; slow — beta)."
+        ),
+        "toggles": {
+            "enable_repair": True,
+            "enable_denoise": True,
+            "enable_colorization": True,
+            "enable_face_restore": True,
+            "enable_sr": True,
+            "enable_reimagine": True,
+        },
+    },
+    "denoise_only": {
+        "label": "Denoise only",
+        "description": "Spatially-gated grain suppression; no repairs or upscaling.",
+        "toggles": {
+            "enable_repair": False,
+            "enable_denoise": True,
+            "enable_colorization": False,
+            "enable_face_restore": False,
+            "enable_sr": False,
+        },
+    },
+}
+
+
+@router.get("/presets")
+async def get_presets() -> Dict[str, Any]:
+    """Q-8: the named restoration presets and the toggles each one sets."""
+    return {"presets": PRESETS}
 
 
 def _prune_old_tasks() -> None:
@@ -121,12 +208,13 @@ async def upload_image(file: UploadFile = File(...)):
 
 @router.post("/process")
 async def process_image(
-    file:     UploadFile = File(...),
-    restore:  bool = Form(True),
-    repair:   bool = Form(True),
-    colorize: bool = Form(True),
-    denoise:  bool = Form(False),
-    device:   str  = Form("auto"),
+    file:      UploadFile = File(...),
+    restore:   bool = Form(True),
+    repair:    bool = Form(True),
+    colorize:  bool = Form(True),
+    denoise:   bool = Form(False),
+    reimagine: bool = Form(False),
+    device:    str  = Form("auto"),
 ):
     """
     Synchronous endpoint — processes image and returns PNG bytes directly.
@@ -149,6 +237,7 @@ async def process_image(
                 enable_repair=repair,
                 enable_colorization=colorize,
                 enable_denoise=denoise,
+                enable_reimagine=reimagine,
                 device_preference=device,
                 filename=file.filename or "unknown",
             )
@@ -164,12 +253,13 @@ async def process_image(
 
 @router.post("/process-stream")
 async def process_image_stream(
-    file:     UploadFile = File(...),
-    restore:  bool = Form(True),
-    repair:   bool = Form(True),
-    colorize: bool = Form(True),
-    denoise:  bool = Form(False),
-    device:   str  = Form("auto"),
+    file:      UploadFile = File(...),
+    restore:   bool = Form(True),
+    repair:    bool = Form(True),
+    colorize:  bool = Form(True),
+    denoise:   bool = Form(False),
+    reimagine: bool = Form(False),
+    device:    str  = Form("auto"),
 ):
     """
     Stream pipeline progress via Server-Sent Events, then provide result URL.
@@ -229,9 +319,11 @@ async def process_image_stream(
                         enable_repair=repair,
                         enable_colorization=colorize,
                         enable_denoise=denoise,
+                        enable_reimagine=reimagine,
                         device_preference=device,
                         progress_callback=progress_callback,
                         filename=file.filename or "unknown",
+                        task_id=task_id,  # Stage-12 evidence overlay key
                     )
                 # Save lossless PNG result
                 result_filename = f"{task_id}.png"
@@ -243,6 +335,9 @@ async def process_image_stream(
                     _tasks[task_id].update({
                         "status":      "done",
                         "result_path": result_path,
+                        # T-2: honesty layer — surfaced in the complete event
+                        # and /status; see ai/report/restoration_report.py.
+                        "restoration_report": ImageService.get_last_restoration_report(),
                     })
                 emit(("done", result_filename))
 
@@ -264,9 +359,11 @@ async def process_image_stream(
                     f"data: {json.dumps({'stage': stage, 'percent': pct, 'message': msg})}\n\n"
                 )
             elif event[0] == "done":
+                with _tasks_lock:
+                    report = _tasks[task_id].get("restoration_report")
                 yield (
                     f"event: complete\n"
-                    f"data: {json.dumps({'percent': 100, 'message': 'Restoration complete', 'task_id': task_id})}\n\n"
+                    f"data: {json.dumps({'percent': 100, 'message': 'Restoration complete', 'task_id': task_id, 'restoration_report': report})}\n\n"
                 )
                 break
             elif event[0] == "error":
@@ -321,6 +418,33 @@ async def get_result(task_id: str):
     )
 
 
+@router.get("/process/{task_id}/evidence")
+async def get_evidence_overlay(task_id: str):
+    """'Show what's real' overlay (Phase H2, design doc §7).
+
+    Colorized evidence-zone map for a hybrid re-imagine result: green =
+    surviving original pixels, magenta = AI-re-imagined zones. Written by
+    Stage 12 next to the result file; swept with the results dir.
+    """
+    with _tasks_lock:  # Fix 12: thread-safe read
+        task = _tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    overlay_rel = (task.get("restoration_report") or {}).get("reimagine", {})
+    # The authoritative path lives in the report's reimagine block.
+    overlay_rel = overlay_rel.get("evidence_overlay") if overlay_rel else None
+    if not overlay_rel:
+        raise HTTPException(
+            status_code=404,
+            detail="No evidence overlay for this task (not a hybrid run).",
+        )
+    safe = "".join(c for c in task_id if c.isalnum() or c in "-_")[:80]
+    overlay_path = os.path.join(_results_dir, f"{safe}_evidence.png")
+    if not os.path.exists(overlay_path):
+        raise HTTPException(status_code=404, detail="Evidence overlay file missing.")
+    return FileResponse(overlay_path, media_type="image/png")
+
+
 @router.get("/process/{task_id}/status")
 async def get_status(task_id: str):
     """Poll task status (non-SSE fallback for environments without SSE support).
@@ -339,4 +463,5 @@ async def get_status(task_id: str):
         "status":   task["status"],
         "progress": task.get("progress", []),
         "error":    task.get("error"),
+        "restoration_report": task.get("restoration_report"),
     }

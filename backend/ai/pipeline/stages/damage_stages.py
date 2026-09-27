@@ -2,7 +2,7 @@
 seam smoothing, facial-anatomy protection, wipeout circuit breaker
 (mixins on RestorationPipeline; see stage_registry.py)."""
 
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 import cv2
 import numpy as np
@@ -23,6 +23,16 @@ from ai.postprocessing.enhancer import Harmonizer
 
 
 class DamageStagesMixin:
+    if TYPE_CHECKING:  # pragma: no cover — host-object contract only
+        from ai.restoration.lama_restorer import LamaRestorer
+
+    # Host-object contract (pyright, plan 6.3): these attributes live on
+    # RestorationPipeline, which composes this mixin.
+    enhanced_detector: EnhancedDamageDetector
+    tearmark_detector: TearmarkDetector
+    inpainting_engine: Optional[InpaintingEngine]
+    _lama: Optional["LamaRestorer"]
+
     def _stage_2_fracture_masking(self, context: PipelineContext, on_progress: Optional[Callable]) -> np.ndarray:
         """
         Stage 2: Multi-Scale Fracture Masking.

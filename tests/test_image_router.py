@@ -19,6 +19,26 @@ class TestImageRouter(unittest.TestCase):
         self.assertIn("models", data)
         self.assertIn("ready", data)
 
+    def test_presets_endpoint(self):
+        """Q-8: presets are served with labels and the pipeline toggles."""
+        response = self.client.get("/api/presets")
+        self.assertEqual(response.status_code, 200)
+        presets = response.json().get("presets", {})
+        self.assertIn("default", presets)
+        for preset in presets.values():
+            self.assertIn("label", preset)
+            self.assertIn("toggles", preset)
+            for toggle in (
+                "enable_repair",
+                "enable_denoise",
+                "enable_colorization",
+                "enable_face_restore",
+                "enable_sr",
+            ):
+                self.assertIn(toggle, preset["toggles"])
+        # The default preset must be the full pipeline.
+        self.assertTrue(all(presets["default"]["toggles"].values()))
+
     def test_upload_valid_png(self):
         # 1x1 transparent PNG bytes
         png_bytes = (

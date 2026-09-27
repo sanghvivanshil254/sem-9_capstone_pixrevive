@@ -4,7 +4,7 @@ This map provides a quick-reference index to navigate the codebase, understand t
 
 ---
 
-## 1. Pipeline Execution Flow (Stages 00 – 10b)
+## 1. Pipeline Execution Flow (Stages 00 – 12)
 
 All stages are orchestrated in [`backend/ai/pipeline/restoration_pipeline.py`](file:///d:/Desktop/kapstone/kapstone/PixRevive/backend/ai/pipeline/restoration_pipeline.py):
 
@@ -25,6 +25,7 @@ flowchart TD
     S9 --> S9c["Stage 9c: Post-SR Deferred Face Restoration (for small faces)"]
     S9c --> S10["Stage 10: Contrast-Adaptive LAB Sharpening"]
     S10 --> S10b["Stage 10b: Projector Exhibition Grade (CLAHE + Shadow S-Curve)"]
+    S10b --> S12["Stage 12: Re-imagine Unrecoverable Damage (SD inpainting + IP-Adapter + SFace gate, beta)"]
 ```
 
 | Stage | Method (defined in `pipeline/stages/*` mixins) | Responsible Module | Description |
@@ -45,6 +46,7 @@ flowchart TD
 | **9c**| Inline in `restore()` | `ai.restoration.face_restorer` | Deferred GFPGAN pass on 4x upscaled canvas for small/low-res faces |
 | **10** | `_stage_10_post_sr_sharpen` | `ai.restoration.super_resolution` / `enhancer` | Post-SR luminance-only LAB unsharp masking |
 | **10b**| `_stage_10b_projector_grade` | `restoration_pipeline.py` | Exhibition CLAHE (clip=1.6) + smooth shadow-lifting tone curve ($y = 0.03 + 0.97x^{0.88} + 0.04\sin(\pi x)$) |
+| **12** | `_stage_12_reimagine` | `ai.restoration.reimaginer` + `ai.restoration.resource_profiler` | Phase-H1 beta: fires only when ≥35% frame or ≥55% worst-face Destroy coverage; SD1.5/SDXL inpainting re-imagines ONLY the lost regions (evidence composited back bytewise), IP-Adapter conditions on the surviving face, SFace identity gate (≥0.42 pass / 0.36–0.42 flag / <0.36 rollback, ≤2 re-rolls) reverts to the LaMa canvas on failure. Resource-tiered (MINIMAL = fp32 + sequential CPU offload, measured 0.76 GB VRAM); `enable_reimagine=false` by default |
 
 ---
 
@@ -67,7 +69,7 @@ PixRevive/
 │   │   │   │   ├── preprocess_stages.py      #   0 despeckle, 1 analyze, 4 face detect
 │   │   │   │   ├── damage_stages.py          #   2 masking, 3 LaMa inpaint (+ seam/protect/breaker sub-steps), 2b cluster smooth, 3b face refresh
 │   │   │   │   ├── color_stages.py           #   5 denoise, 6 colorization, 7 face restoration
-│   │   │   │   └── finish_stages.py          #   8 pre-SR AA, 9 SR, 10 sharpen, 10b projector grade
+│   │   │   │   └── finish_stages.py          #   8 pre-SR AA, 9 SR, 10 sharpen, 10b projector grade, 12 re-imagine
 │   │   │   ├── pipeline_context.py           # State container: working_image, damage_masks, metadata, timers
 │   │   │   ├── pipeline_router.py            # Routing decisions based on image analysis (6 named routes + SAFE_FALLBACK)
 │   │   │   └── debug_logger.py               # Debug stage snapshots saved to debug_output/
@@ -91,6 +93,8 @@ PixRevive/
 │   │   │   └── quality_service.py            # Quality analysis service layer
 │   │   │
 │   │   ├── restoration/
+│   │   │   ├── resource_profiler.py          # Phase-H1: 4-level resource tiers (MINIMAL/STANDARD/AMPLE/REFUSED) from measured VRAM/RAM; pins dtype & SD variant; REIMAGINE_FORCE_TIER override
+│   │   │   ├── reimaginer.py                 # Phase-H1 beta engine: evidence-preserving SD inpainting of lost regions, IP-Adapter identity conditioning, NaN self-heal, SFace rollback ladder
 │   │   │   ├── face_restorer.py              # GFPGAN v1.4, multi-face damage-aware composite, fidelity=0.85
 │   │   │   ├── super_resolution.py           # RealESRGAN x4, 2K normalizer, tiled inference, LAB post-sharpening
 │   │   │   ├── inpainting_engine.py          # LaMa orchestrator + OpenCV Telea fallback
@@ -103,22 +107,19 @@ PixRevive/
 │   │   │   ├── color_refiner.py              # BandingReducer, SaturationBalancer, EdgeAwareColorBleedFixer
 │   │   │   └── ddcolor/                      # Vendored upstream DDColor inference source code
 │   │   │
+│   │   ├── report/
+│   │   │   └── restoration_report.py         # T-2 honesty layer: recovered/reconstructed/flagged per run (plan 5.1)
+│   │   │
 │   │   ├── postprocessing/
-│   │   │   ├── denoiser.py                   # AdaptiveDenoiser, WaveletDenoiser, SmartDenoiser, ArtifactDetector
 │   │   │   ├── enhancer.py                   # Harmonizer — guided-filter seam blending along inpainting rims (Enhancer class deleted, D17)
-│   │   │   └── noise_router.py               # Noise type classifier (30 types) & multi-filter dispatch
+│   │   │   └── noise_router.py               # Noise type classifier (30 types) & multi-filter dispatch (denoiser stack pruned, plan 5.4)
 │   │   │
 │   │   ├── validation/
 │   │   │   ├── identity_validator.py         # SSIM & facial landmark distance verification
+│   │   │   ├── face_identity_gate.py         # Phase-H1: YuNet detect + SFace cosine identity gate (0.42/0.36 thresholds) for the re-imagine stage
 │   │   │   └── forensic_validator.py         # Residual defect checks & inpaint quality score
 │   │   │
-│   │   ├── orchestrator/                     # Experimental action-based orchestrator (PIXREVIVE_USE_ORCHESTRATOR)
-│   │   │   ├── orchestrator.py               # PhotoOrchestrator: perception → plan → act loop
-│   │   │   ├── loop_controller.py            # Iteration control with convergence gates
-│   │   │   ├── perception/                   # Defect proposer, corroborator, feature bank, taxonomy
-│   │   │   ├── actions/                      # colorize/denoise/detail/face/geometry/inpaint/superres actions
-│   │   │   ├── synthesis_manifest.py         # Planned action manifest
-│   │   │   └── transaction.py                # Rollback-safe applied-action ledger
+│   │   ├── (orchestrator moved to experimental/orchestrator — parked engine, plan 5.2)
 │   │   │
 │   │   ├── download_weights.py               # Canonical checkpoint download manifest (GitHub/HF → backend/ai/weights/)
 │   │   └── install_ddcolor.py                # DDColor vendored-source installer
@@ -133,18 +134,31 @@ PixRevive/
 │   │       ├── facelib/                      # RetinaFace detection checkpoints
 │   │       ├── big-lama.pt                   # LaMa inpainting model
 │   │       ├── GFPGANv1.4.pth                # GFPGAN face restoration
-│   │       └── RealESRGAN_x4plus.pth         # Real-ESRGAN 4x super-resolution
+│   │       ├── RealESRGAN_x4plus.pth         # Real-ESRGAN 4x super-resolution
+│   │       ├── sd15_inpaint/                 # Phase-H1: SD-1.5 inpainting fp16 (runwayml org dead; official redirect target)
+│   │       ├── ip_adapter/                   # Phase-H1: h94 repo layout — models/ip-adapter_sd15.safetensors + models/image_encoder/ (config.json self-heals from reimaginer.py)
+│   │       └── sface/                        # Phase-H1: YuNet detector + SFace recognizer ONNX (identity gate)
 │   │
 │   └── requirements.txt                      # Backend dependencies
+│
+├── experimental/                             # Parked experiments — not part of the app
+│   └── orchestrator/                         # Two-Tier PPCAV engine, archived per plan 5.2 (see its README)
 │
 ├── frontend/                                 # Vite + React UI
 │   └── src/
 │       ├── App.jsx                           # Router + layout
 │       ├── components/
-│       │   ├── ImageUploader.jsx             # Upload dropzone
+│       │   ├── ImageUploader.jsx             # Composition root: dropzone + action bar (thin, plan 5.6)
+│       │   ├── ResultCard.jsx                # Before/after panes + Restoration Report card
+│       │   ├── OptionsPanel.jsx              # Q-8 preset selector + pipeline toggles + device
+│       │   ├── RestorationReportCard.jsx     # T-2 honesty layer, collapsible report
 │       │   ├── ProgressBar.jsx               # Monotonic stage progress visualizer (STAGES/EDGE_LABELS)
 │       │   ├── Navbar.jsx                    # Health pill: online / loading / degraded (per-model load_errors) / offline
 │       │   └── Footer.jsx
+│       ├── hooks/
+│       │   └── useRestorationJob.js          # Job state + SSE streaming + preset state (plan 5.6/5.7)
+│       ├── services/
+│       │   └── api.js                        # Single API origin (VITE_API_BASE) + URL helpers (plan 5.5)
 │       └── pages/
 │           ├── Home.jsx                      # Restore page
 │           ├── Documentation.jsx

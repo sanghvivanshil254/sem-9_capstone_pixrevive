@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 
 
 class PreprocessStagesMixin:
+    # Host-object contract (pyright, plan 6.3): these attributes live on
+    # RestorationPipeline, which composes this mixin.
+    face_detector: FaceDetector
+
     def _stage_0_despeckle(self, context: PipelineContext, on_progress: Optional[Callable]) -> None:
         """Stage 0: Impulse and speck suppression, before anything measures the image.
 
@@ -99,6 +103,9 @@ class PreprocessStagesMixin:
             context.add_log(f"Stage 0 SpeckSuppressor failed: {exc}")
 
         context.end_timer("stage_0_despeckle")
+        if acted:
+            # Evidence flag for the Restoration Report (T-2).
+            context.image_metadata["specks_suppressed"] = True
         context.add_log(
             f"Stage 0 Despeckle: {', '.join(acted)} suppressed — damage detection "
             "will see a speck-free image."

@@ -5,9 +5,6 @@ import cv2
 import numpy as np
 from typing import Dict, Any, Optional, List
 
-from ai.orchestrator.synthesis_manifest import SynthesisManifest
-from ai.orchestrator.transaction import CanvasTransaction
-
 
 class PipelineContext:
     def __init__(self, original_image: np.ndarray, metadata: Optional[Dict[str, Any]] = None):
@@ -45,14 +42,9 @@ class PipelineContext:
         self.stage_timings: Dict[str, float] = {}
         self._timer_starts: Dict[str, float] = {}
 
-        # Orchestrator Provenance & Transaction State (v2.0)
-        self.synthesis_manifest: SynthesisManifest = SynthesisManifest()
-        self.hyperparameters: Dict[str, Any] = {
-            "nlm_h": 10.0,
-            "gfpgan_blend_weight": 0.85,
-            "inpaint_dilation_radius": 3,
-            "colorize_opacity": 0.85,
-        }
+        # Orchestrator provenance/transaction state (synthesis_manifest,
+        # hyperparameters, begin_transaction, step_down_parameter) moved to
+        # experimental/orchestrator with the parked Two-Tier engine (plan 5.2).
 
     def add_log(self, message: str):
         """Add an entry to the processing log."""
@@ -129,28 +121,5 @@ class PipelineContext:
             elapsed = time.perf_counter() - start
             self.stage_timings[stage_name] = round(elapsed, 3)
             self.add_log(f"[TIMING] {stage_name}: {elapsed:.3f}s")
-
-    def begin_transaction(self, action_name: str) -> CanvasTransaction:
-        """Create an atomic canvas transaction checkpoint."""
-        return CanvasTransaction(self, action_name)
-
-    def step_down_parameter(self, action_name: str, param_name: str) -> None:
-        """Progressively relax/attenuate parameters when an action fails verification."""
-        if param_name == "nlm_h":
-            current = self.hyperparameters.get("nlm_h", 10.0)
-            self.hyperparameters["nlm_h"] = max(2.0, round(current * 0.70, 2))
-            self.add_log(f"[STEP-DOWN] {action_name}: nlm_h {current} -> {self.hyperparameters['nlm_h']}")
-        elif param_name == "gfpgan_blend_weight":
-            current = self.hyperparameters.get("gfpgan_blend_weight", 0.85)
-            self.hyperparameters["gfpgan_blend_weight"] = max(0.20, round(current * 0.50, 2))
-            self.add_log(f"[STEP-DOWN] {action_name}: gfpgan_blend_weight {current} -> {self.hyperparameters['gfpgan_blend_weight']}")
-        elif param_name == "inpaint_dilation_radius":
-            current = self.hyperparameters.get("inpaint_dilation_radius", 3)
-            self.hyperparameters["inpaint_dilation_radius"] = max(1, current - 1)
-            self.add_log(f"[STEP-DOWN] {action_name}: inpaint_dilation_radius {current} -> {self.hyperparameters['inpaint_dilation_radius']}")
-        elif param_name == "colorize_opacity":
-            current = self.hyperparameters.get("colorize_opacity", 0.85)
-            self.hyperparameters["colorize_opacity"] = max(0.40, round(current * 0.80, 2))
-            self.add_log(f"[STEP-DOWN] {action_name}: colorize_opacity {current} -> {self.hyperparameters['colorize_opacity']}")
 
 

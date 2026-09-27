@@ -134,7 +134,14 @@ class TestRegistryContract(unittest.TestCase):
         self.assertIsNone(spec.method)
         self.assertLess(ids.index("analyze"), ids.index("cast_fix"),
                         "cast_fix needs color_type from analysis")
-        self.assertLess(ids.index("cast_fix"), ids.index("face_detect"))
+        # The runtime order is face_detect THEN cast_fix (restore() calls
+        # early face detection right after analysis, the cast fix after it);
+        # the registry previously listed cast_fix first, which made emitted
+        # progress go 12 -> 11 — a ProgressBar monotonicity break (robustness
+        # audit 2026-09-25).
+        self.assertLess(ids.index("face_detect"), ids.index("cast_fix"))
+        self.assertEqual(next(s for s in STAGE_REGISTRY if s.id == "face_detect").progress_pct, 11)
+        self.assertEqual(spec.progress_pct, 12)
 
     def test_deband_documented_on_pre_sr(self):
         spec = next(s for s in STAGE_REGISTRY if s.id == "pre_sr")

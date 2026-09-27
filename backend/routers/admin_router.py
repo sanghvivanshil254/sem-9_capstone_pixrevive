@@ -341,25 +341,35 @@ def async_process_zip_dataset(zip_file_path: str, upload_id: str):
             except Exception:
                 pass
 
+# Admin weight upload targets (plan 6.2): every model the pipeline can load
+# at runtime, mapped to its canonical file layout under backend/ai/weights/.
+# Subdirectory targets (DDColor, Restormer deblur) are created on demand.
+_WEIGHT_UPLOAD_TARGETS = {
+    "realesrgan": ("RealESRGAN_x4plus.pth",   AI_WEIGHTS_DIR),
+    "gfpgan":     ("GFPGANv1.4.pth",          AI_WEIGHTS_DIR),
+    "lama":       ("big-lama.pt",             AI_WEIGHTS_DIR),
+    "colorizer":  ("ddcolor_modelscope.pth",  os.path.join(AI_WEIGHTS_DIR, "ddcolor")),
+    "deblur":     ("motion_deblurring.pth",   os.path.join(AI_WEIGHTS_DIR, "restormer")),
+}
+
 @router.post("/weights/upload")
 async def upload_weights(
     file: UploadFile = File(...),
     model_type: str = Form(...)
 ):
-    if not file.filename or not file.filename.endswith(".pth"):
-        raise HTTPException(status_code=400, detail="Only PyTorch .pth files are allowed.")
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided.")
+    # LaMa ships as .pt; every other model as .pth — both are torch checkpoints.
+    if not (file.filename.endswith(".pth") or file.filename.endswith(".pt")):
+        raise HTTPException(status_code=400, detail="Only PyTorch .pth/.pt files are allowed.")
 
-    if model_type == "realesrgan":
-        target_filename = "RealESRGAN_x4plus.pth"
-        target_dir = AI_WEIGHTS_DIR
-    elif model_type == "gfpgan":
-        target_filename = "GFPGANv1.4.pth"
-        target_dir = AI_WEIGHTS_DIR
-    else:
+    target = _WEIGHT_UPLOAD_TARGETS.get(model_type)
+    if target is None:
         raise HTTPException(
             status_code=400,
-            detail="Invalid model type. Use 'realesrgan' or 'gfpgan'."
+            detail="Invalid model type. Use one of: " + ", ".join(sorted(_WEIGHT_UPLOAD_TARGETS)) + ".",
         )
+    target_filename, target_dir = target
 
     os.makedirs(target_dir, exist_ok=True)
     target_path = os.path.join(target_dir, target_filename)
@@ -728,6 +738,7 @@ async def get_weights_status():
         "gfpgan":      "GFPGANv1.4.pth",
         "realesrgan":  "RealESRGAN_x4plus.pth",
         "lama":        "big-lama.pt",
+        "deblur":      os.path.join("restormer", "motion_deblurring.pth"),
     }
     for key, filename in expected_weights.items():
         path = os.path.join(AI_WEIGHTS_DIR, filename)

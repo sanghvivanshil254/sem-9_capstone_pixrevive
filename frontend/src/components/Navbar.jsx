@@ -1,8 +1,7 @@
 import { Camera, CheckCircle2, Loader2, AlertCircle, AlertTriangle, ExternalLink, RefreshCw } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-
-const BACKEND_URL = 'http://localhost:8000';
+import { BACKEND_ORIGIN as BACKEND_URL } from '../services/api';
 
 export default function Navbar() {
   // Only the setter is used — the count is read via the updater form in

@@ -2,7 +2,9 @@
 anti-aliasing, super-resolution, sharpening, exhibition grading
 (mixins on RestorationPipeline; see stage_registry.py)."""
 
-from typing import Any, Callable, Dict, List, Optional
+import logging
+import os
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 import cv2
 import numpy as np
@@ -18,12 +20,274 @@ from ai.damage.tearmark_detector import TearmarkDetector
 from ai.damage.mask_refiner import MaskRefiner
 from ai.restoration.inpainting_engine import InpaintingEngine
 from ai.restoration.super_resolution import SuperResolution
+
+logger = logging.getLogger(__name__)
+
+# Phase H2 "Show what's real": per-task evidence-zone artifacts live next to
+# the result files in temp_results (served at /api/process/{id}/evidence and
+# swept with them), fulfilling design §7's auditability promise — the
+# real/generated claim is provable, not asserted.
+EVIDENCE_DIR = os.path.abspath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "temp_results"))
 from ai.restoration.deblurrer import ImageDeblurrer, estimate_optical_blur
 from ai.colorization.color_refiner import ColorArtifactReducer
 from ai.postprocessing.enhancer import Harmonizer
 
 
 class FinishStagesMixin:
+    if TYPE_CHECKING:  # pragma: no cover — host-object contract only
+        from ai.restoration.lama_restorer import LamaRestorer
+        from ai.colorization.ddcolor_colorizer import DDColorColorizer
+        from ai.restoration.face_restorer import FaceRestorer
+
+    # Host-object contract (pyright, plan 6.3): these attributes live on
+    # RestorationPipeline, which composes this mixin.
+    _device: str
+    _model_load_failures: Dict[str, str]
+    face_detector: FaceDetector
+    face_restorer: "FaceRestorer"
+    super_resolution: SuperResolution
+    colorizer: "DDColorColorizer"
+    _lama: Optional["LamaRestorer"]
+
+    def _stage_11_output_verify(self, context: PipelineContext, on_progress: Optional[Callable]) -> None:
+        """Stage 11: closed-loop output verification.
+
+        Re-detects damage residue on the RESTORED image (the repair stages
+        trust their own masks), micro-cleans specks outside faces, and runs
+        color-coherence / texture-plausibility checks. Findings land in
+        metadata["output_verification"] and the Restoration Report flags.
+        """
+        from ai.validation.output_verifier import verify_and_clean
+
+        if on_progress:
+            on_progress("output_verify", 99, "Verifying the restored output...")
+        context.start_timer("output_verify")
+        try:
+            record = verify_and_clean(context)
+            context.image_metadata["output_verification"] = record
+        except Exception as exc:  # verification must never destroy a result
+            from ai.pipeline.debug_logger import DebugLogger
+
+            context.image_metadata["output_verification"] = {"ran": False, "error": str(exc)}
+            context.add_log(f"Stage 11 OutputVerify: skipped ({type(exc).__name__}: {exc}).")
+        finally:
+            context.end_timer("output_verify")
+
+    @staticmethod
+    def _save_evidence_overlay(task_key: str, working_image: np.ndarray,
+                               keep: np.ndarray) -> str:
+        """Write the colorized evidence-zone overlay for a hybrid result.
+
+        Green tint over surviving original pixels, translucent magenta over
+        AI-re-imagined zones, on a dimmed copy of the output — one PNG that
+        shows exactly where the original evidence ends and the re-imagination
+        begins (design doc §7 'Show what's real').
+        """
+        import cv2
+
+        os.makedirs(EVIDENCE_DIR, exist_ok=True)
+        safe = "".join(c for c in task_key if c.isalnum() or c in "-_")[:80]
+        if not safe:
+            safe = "adhoc"
+        out_path = os.path.join(EVIDENCE_DIR, f"{safe}_evidence.png")
+
+        h, w = working_image.shape[:2]
+        overlay = (working_image.astype(np.float32) * 0.45)
+        green = np.array([46, 204, 113], dtype=np.float32)   # RGB original
+        magenta = np.array([214, 69, 176], dtype=np.float32)  # RGB re-imagined
+        overlay[keep] = overlay[keep] + green * 0.55
+        overlay[~keep] = overlay[~keep] + magenta * 0.55
+        cv2.imwrite(out_path, cv2.cvtColor(
+            np.clip(overlay, 0, 255).astype(np.uint8), cv2.COLOR_RGB2BGR))
+        return out_path
+
+    def _release_standard_models(self) -> None:
+        """Free LaMa/GFPGAN/Real-ESRGAN/DDColor VRAM before Stage 12 re-imagine.
+
+        Stage 12 is the final content stage: nothing re-reads these weights
+        this request. The re-imagine engine's resource gate needs the floor
+        they were holding (measured: only 0.94 GB free with them resident).
+        Idempotent and failure-tolerant — an unload failure must not kill a
+        completed restoration.
+        """
+        for attr in ("_lama", "face_restorer", "super_resolution", "colorizer"):
+            obj = getattr(self, attr, None)
+            if obj is not None and hasattr(obj, "unload"):
+                try:
+                    obj.unload()
+                except Exception as exc:  # noqa: BLE001 - never kill the run
+                    logger.warning("Stage 12: unloading %s failed: %s", attr, exc)
+        # RetinaFace (face_detector) and the U-Net defect segmenter are the
+        # other big GPU residents (~2.4 GB together). Both self-heal lazily:
+        # detect() reloads det_net, EnhancedDamageDetector recreates the
+        # segmenter when None.
+        fd = getattr(self, "face_detector", None)
+        if fd is not None and hasattr(fd, "unload"):
+            try:
+                fd.unload()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Stage 12: unloading face_detector failed: %s", exc)
+        ed = getattr(self, "enhanced_detector", None)
+        seg = getattr(ed, "defect_segmenter", None) if ed is not None else None
+        if seg is not None and getattr(seg, "is_loaded", False):
+            seg.model = None
+            seg.is_loaded = False  # EnhancedDamageDetector recreates it lazily
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def _restore_standard_models(self) -> None:
+        """Reload what _release_standard_models freed (best-effort).
+
+        Reuses the canonical _reload_models_on path (same one device switching
+        uses): it reloads LaMa/GFPGAN/Real-ESRGAN/DDColor, rewires the
+        inpainting engine, records failures in _model_load_failures for
+        /api/health, and re-sets the colorizer-ready event. A failed reload
+        degrades the NEXT request, never this one.
+        """
+        try:
+            self._reload_models_on(self._device)
+        except Exception as exc:  # noqa: BLE001 - next request recovers lazily
+            logger.warning("Stage 12: standard-model reload failed: %s", exc)
+        # Detectors reload lazily on next use, but warm them now so the next
+        # request starts clean (failure here only degrades the next request).
+        fd = getattr(self, "face_detector", None)
+        if fd is not None:
+            try:
+                fd._ensure_det_net()
+            except Exception:  # noqa: BLE001
+                pass
+        ed = getattr(self, "enhanced_detector", None)
+        seg = getattr(ed, "defect_segmenter", None) if ed is not None else None
+        if seg is not None and not getattr(seg, "is_loaded", False):
+            try:
+                seg.load()
+            except Exception:  # noqa: BLE001
+                pass
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def _stage_12_reimagine(self, context: PipelineContext, on_progress: Optional[Callable]) -> None:
+        """Stage 12 (Phase H1, opt-in beta): re-imagine unrecoverable regions.
+
+        Fires only when the user opted in (registry route_gate) AND the
+        coverage gate agrees the damage is hopeless (>= 35% of frame or
+        >= 55% of any face is Destroy-class). The engine composites every
+        surviving pixel back unconditionally (bytewise-asserted), verifies
+        identity via SFace with bounded rollback, and records the full
+        evidence/resource disclosure into metadata for the report.
+        """
+        if on_progress:
+            on_progress("reimagine", 99, "Re-imagining unrecoverable regions (beta)...")
+        context.start_timer("reimagine")
+        try:
+            from ai.restoration.reimaginer import reimagine
+
+            meta = context.image_metadata
+            masks = context.damage_masks
+            destroy = None
+            for key in ("final", "inpaint", "damage"):
+                m = masks.get(key)
+                if m is not None and np.any(m > 0):
+                    destroy = (m > 0).astype(np.uint8) * 255
+                    break
+            # Coverage gate: hopeless = >= 35% of frame or >= 55% of a face.
+            frame_pct = (
+                float(np.sum(destroy > 0) / destroy.size * 100)
+                if destroy is not None else 0.0
+            )
+            face_pct = None
+            faces = meta.get("faces") or []
+            if destroy is not None and faces:
+                h, w = destroy.shape[:2]
+                for face in faces:
+                    bbox = face.get("bbox")
+                    if not bbox or len(bbox) < 4:
+                        continue
+                    x0, y0, x1, y1 = [int(round(v)) for v in bbox[:4]]
+                    x0, y0 = max(0, x0), max(0, y0)
+                    x1, y1 = min(w, x1), min(h, y1)
+                    if x1 - x0 < 4 or y1 - y0 < 4:
+                        continue
+                    roi = destroy[y0:y1, x0:x1]
+                    pct = float(np.sum(roi > 0) / roi.size * 100)
+                    face_pct = pct if face_pct is None else max(face_pct, pct)
+            hopeless = frame_pct >= 35.0 or (face_pct is not None and face_pct >= 55.0)
+            record = {
+                "ran": True,
+                "status": "skipped",
+                "reason": (
+                    "coverage below the hopeless bar "
+                    f"(frame {frame_pct:.1f}%, worst face "
+                    f"{face_pct if face_pct is not None else 'n/a'})"
+                ),
+                "coverage": {"frame_pct": round(frame_pct, 2),
+                             "worst_face_pct": (round(face_pct, 2)
+                                                if face_pct is not None else None)},
+            }
+            if hopeless:
+                # VRAM bridge (integration fix, measured 2026-09-27): inside
+                # the live pipeline the standard models (LaMa/GFPGAN/Real-
+                # ESRGAN/DDColor) hold enough VRAM that only ~0.9 GB stays
+                # free and the reimagine resource gate can never clear its
+                # 3.0 GB MINIMAL floor. Stage 12 is the FINAL content stage —
+                # nothing needs those weights again this request — so release
+                # them before the engine profiles, and reload them in the
+                # finally below so later requests are unaffected.
+                self._release_standard_models()
+                try:
+                    result = reimagine(
+                        context.working_image,
+                        destroy if destroy is not None
+                        else np.zeros(context.working_image.shape[:2], np.uint8),
+                        task_id=str(meta.get("task_id", "adhoc")),
+                    )
+                finally:
+                    self._restore_standard_models()
+                if result.get("status") == "done":
+                    pre = context.working_image
+                    context.working_image = result.pop("result")
+                    keep = (destroy == 0)
+                    result["evidence_preserved"] = bool(
+                        np.array_equal(context.working_image[keep], pre[keep]))
+                    context.sync_geometry_to_working_image()
+                    # "Show what's real" (design §7): persist the evidence
+                    # zones as a colorized overlay (green = original pixels,
+                    # translucent magenta = AI-re-imagined) next to the result
+                    # file, served at /api/process/{task_id}/evidence. The
+                    # real/generated claim becomes auditable, not asserted.
+                    try:
+                        task_key = str(meta.get("task_id", "adhoc"))
+                        self._save_evidence_overlay(
+                            task_key, context.working_image, keep)
+                        result["evidence_overlay"] = (
+                            f"/api/process/{task_key}/evidence")
+                    except Exception as exc:  # noqa: BLE001 - audit art only
+                        logger.warning("evidence overlay save failed: %s", exc)
+                record.update(result)
+                if record.get("status") == "done":
+                    # A success record must not carry the earlier skip reason.
+                    record.pop("reason", None)
+            meta["reimagine"] = record
+            context.add_log(
+                f"Stage 12 Reimagine: {record.get('status')} — "
+                f"{record.get('reason', 'no further detail.')[:160]}"
+            )
+        except Exception as exc:  # never destroy a completed restoration
+            logger.exception("Stage 12 Reimagine failed")
+            context.image_metadata["reimagine"] = {
+                "ran": True,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            context.add_log(f"Stage 12 Reimagine failed: {type(exc).__name__}: {exc}.")
+        finally:
+            context.end_timer("reimagine")
+            try:
+                from ai.restoration.reimaginer import unload_reimagine_models
+                unload_reimagine_models()
+            except Exception:  # noqa: BLE001 - unload is best-effort
+                pass
+
     def _stage_4_5_deblur(self, context: PipelineContext, on_progress: Optional[Callable]) -> None:
         """Stage 4.5 (T-3): Restormer deblur, strictly gated on optical blur.
 
@@ -86,7 +350,7 @@ class FinishStagesMixin:
         the registry loop can call this stage uniformly (method(context)).
         """
         if faces is None:
-            faces = context.image_metadata.get("faces", [])
+            faces = list(context.image_metadata.get("faces") or [])
         DebugLogger.save_stage(context, "04b_before_denoise")
 
         if on_progress:
@@ -151,7 +415,7 @@ class FinishStagesMixin:
             final_mask = context.damage_masks.get("final")
             bg_damaged = False
             if final_mask is not None and np.any(final_mask > 0):
-                bg_pix = bg_mask > 0.5
+                bg_pix = np.asarray(bg_mask) > 0.5
                 if np.any(bg_pix):
                     bg_cov = float(np.sum(final_mask[bg_pix] > 0)) / max(1.0, float(np.sum(bg_pix)))
                     if bg_cov > 0.02:
@@ -231,6 +495,8 @@ class FinishStagesMixin:
                 f"(sigma={sigma_noise:.2f} -> {sigma_after:.2f}; "
                 f"h_face={h_face:.1f}, h_mid={h_mid:.1f}, h_bg={h_bg:.1f})."
             )
+            # Evidence flag for the Restoration Report (T-2).
+            context.image_metadata["denoise_applied"] = True
         except Exception as exc:
             context.add_log(f"Stage 5 Denoise failed: {exc}")
 
@@ -267,6 +533,7 @@ class FinishStagesMixin:
             min_face_size = min(face_sizes) if face_sizes else 999
             if min_dim < 320 or min_face_size < 90:
                 context.pipeline_flags["face_restore_deferred_to_post_sr"] = True
+                context.image_metadata["gfpgan_deferred"] = True
                 context.add_log(
                     f"Stage 7 FaceRestoration: Face size ({min_face_size}px) or canvas ({min_dim}px) "
                     "below landmark reliability threshold (<90px / <320px). Deferring to post-SR."
@@ -281,6 +548,7 @@ class FinishStagesMixin:
 
         try:
             self.face_restorer.restore(context)
+            context.image_metadata["gfpgan_applied"] = True
             context.add_log("Stage 7 FaceRestoration: GFPGAN completed.")
         except Exception as exc:
             context.add_log(f"Stage 7 FaceRestoration failed: {exc}")

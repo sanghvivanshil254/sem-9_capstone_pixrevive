@@ -116,25 +116,30 @@ STAGE_REGISTRY: List[StageSpec] = [
         debug_snapshot="01_after_analyze",
     ),
     StageSpec(
-        # T-7 dye-fade rebalance: input-side gray-world/channel-curve cast fix
-        # for COLOR-classified prints, using the logic salvaged from the
-        # deleted Enhancer (D17 -> ColorArtifactReducer). Runs after analysis
-        # (needs color_type) and before routing/detection: sepia tone is
-        # historic character and is excluded BY TYPE — documented
-        # false-negative, the safe direction.
-        id="cast_fix",
-        name="Dye-fade color-cast rebalancing",
-        method=None,  # inlined in restore() after analysis (needs color_type)
-        progress_pct=11,
-        progress_message="Rebalancing faded print colors...",
-    ),
-    StageSpec(
         id="face_detect",
         name="Early face & landmark detection",
         method="_stage_4_face_detect",
-        progress_pct=12,
+        # NOTE: listed BEFORE cast_fix because that is the actual runtime
+        # order (restore() calls face detection right after analysis, the
+        # cast fix after it). The registry once listed cast_fix first, which
+        # made the emitted progress percent go 12 -> 11 — a ProgressBar
+        # monotonicity break found by the 2026-09-25 robustness audit.
+        progress_pct=11,
         progress_message="Detecting faces and facial landmarks...",
         debug_snapshot="04_after_face_detect",
+    ),
+    StageSpec(
+        # T-7 dye-fade rebalance: input-side gray-world/channel-curve cast fix
+        # for COLOR-classified prints, using the logic salvaged from the
+        # deleted Enhancer (D17 -> ColorArtifactReducer). Runs after analysis
+        # (needs color_type) and after early face detection, before damage
+        # routing/detection: sepia tone is historic character and is excluded
+        # BY TYPE — documented false-negative, the safe direction.
+        id="cast_fix",
+        name="Dye-fade color-cast rebalancing",
+        method=None,  # inlined in restore() after analysis (needs color_type)
+        progress_pct=12,
+        progress_message="Rebalancing faded print colors...",
     ),
     StageSpec(
         id="damage_detect",
@@ -261,6 +266,38 @@ STAGE_REGISTRY: List[StageSpec] = [
         progress_message="Applying projector exhibition grading...",
         debug_snapshot="10b_after_projector_grade",
         route_gate=None,
+    ),
+    StageSpec(
+        # Closed-loop verification (2026-09-25): the repair stages trust their
+        # own masks, so input-side misses survived into every output. This
+        # stage re-detects residue ON THE OUTPUT, micro-cleans it (Telea,
+        # residual pixels only, faces excluded), and runs the color-coherence
+        # and texture-plausibility checks that surface implausible
+        # re-synthesis in the Restoration Report.
+        id="output_verify",
+        name="Closed-loop output verification",
+        method="_stage_11_output_verify",
+        progress_pct=99,
+        progress_message="Verifying the restored output...",
+        debug_snapshot="11_after_output_verify",
+        route_gate=None,
+    ),
+    StageSpec(
+        # Phase H1 — re-imagine (opt-in beta): hybrid evidence-preserving
+        # diffusion for UNRECOVERABLE damage (>= 35% of frame or >= 55% of a
+        # face is Destroy-class). Runs as the FINAL content stage: the
+        # evidence contract out[E] == pre-reimagine[E] must hold on the
+        # shipped image, so nothing may modify pixels after this stage.
+        # Skips gracefully when off / not opted-in / coverage below the
+        # hopeless bar / resources or weights unavailable — the report
+        # carries the reason either way (docs/HYBRID_DIFFUSION_DESIGN.md).
+        id="reimagine",
+        name="Re-imagine lost regions (beta)",
+        method="_stage_12_reimagine",
+        progress_pct=99,
+        progress_message="Re-imagining unrecoverable regions (beta)...",
+        debug_snapshot="12_after_reimagine",
+        route_gate="enable_reimagine",
     ),
 ]
 
