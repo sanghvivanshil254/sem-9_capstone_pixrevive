@@ -26,6 +26,10 @@ def main() -> int:
     ap.add_argument("--no-colorize", action="store_true")
     ap.add_argument("--no-restore", action="store_true")
     ap.add_argument("--no-repair", action="store_true")
+    ap.add_argument(
+        "--denoise", action="store_true",
+        help="Enable Stage 4b/5 denoising (default off: keeps clean scans sharp).",
+    )
     args = ap.parse_args()
 
     from ai.pipeline.restoration_pipeline import RestorationPipeline
@@ -50,7 +54,7 @@ def main() -> int:
         enable_restoration=not args.no_restore,
         enable_repair=not args.no_repair,
         enable_colorization=not args.no_colorize,
-        enable_denoise=False,
+        enable_denoise=args.denoise,
         progress_callback=on_progress,
     )
     elapsed = time.time() - t0

@@ -166,6 +166,35 @@ class NoiseClassifier:
             "speckle": speckle_score,
         }
 
+        # ── Fine-grain floor family (measured 2026-09-29, corpus table below) ──
+        # Scanned prints carry a fine grain/scan-noise floor — a low-amplitude
+        # residual field over content WITHOUT dense impulse spikes. The old
+        # battery was blind to it: residual_mad ~3.5 normalized to 0.04 (gate
+        # 0.18), impulse_ratio ~0.005 (gate 0.18), speckle detectors 0.0 (flat
+        # residual profile, no brightness slope) — while the same field's fine
+        # structure manufactured blocking 0.78 / ringing 0.77 and routed the
+        # image to the deblock filter, which changes nothing on speckle. The
+        # grain then rode through SR into colorization and came out as painted
+        # texture (the "watercolor background" failure class).
+        #
+        # Measured residual_mad on the corpus (clean scans -> heavy damage):
+        #   1.4-1.9  clean/near-clean scans (case10/11/12, screenshots 1/3)
+        #   3.5-4.0  fine grain floor (all four Lena variants incl. the SigShrink
+        #            speckle figure, screenshot_portrait_2) + case6 torn photo
+        #   13.7+    heavy noise — all detected upstream by impulse/random
+        # A floor of 2.6 sits in the measured 1.9..3.5 gap; no clean scan
+        # reaches it, every grain-floor image clears it. Requires the residual
+        # to be texture (edge_density >= 0.03) and NOT impulse-like
+        # (impulse_ratio < 0.02) so true spike fields stay with their families.
+        grain_floor = (
+            residual_mad >= 2.6
+            and edge_density >= 0.03
+            and impulse_ratio < 0.02
+            and random_impulse_ratio < 0.01
+        )
+        if grain_floor:
+            family_scores["grain_floor"] = _normalize(residual_mad, 2.6, 6.0)
+
         detected: List[str] = []
         if family_scores["impulse"] > 0.18:
             detected.extend(_IMPULSE_NOISE_TYPES)
@@ -173,6 +202,8 @@ class NoiseClassifier:
             detected.extend(_RANDOM_NOISE_TYPES)
         if speckle_score > 0.22:
             detected.append("speckle")
+        if grain_floor:
+            detected.append("grain_floor")
         if periodic_score > 0.20:
             detected.extend(["periodic", "sinusoidal", "interference"])
         if striping_score > 0.20:
@@ -240,6 +271,15 @@ class NoiseRouter:
 
         if _has_any(profile, _IMPULSE_NOISE_TYPES):
             stages.append(("impulse_median", _reduce_impulse(current, profile)))
+
+        if "grain_floor" in profile.detected_types:
+            # Light NLM pass for the fine grain/scan-noise floor. Deliberately
+            # gentler than the full random-noise treatment: the floor rides on
+            # images that also carry real content (grain-floor images are at
+            # residual_mad ~2.6-6, not 14+). The existing quality gate still
+            # evaluates the candidate like any other stage.
+            strength = profile.family_scores.get("grain_floor", 0.5)
+            stages.append(("grain_floor_nlm", _reduce_grain_floor(current, strength)))
 
         if _has_any(profile, _PERIODIC_NOISE_TYPES):
             stages.append(("periodic_fft_notch", _reduce_periodic(stages[-1][1] if stages else current, profile)))
@@ -426,6 +466,19 @@ def _speckle_slope_score(
 
     unlike the old global-correlation score, this survives large flat margins
     because only content pixels are binned.
+
+    Bin-abort bug fixed (2026-09-29, measured on the SigShrink speckle-Lena
+    figure): the original returned 0.0 whenever ANY quintile was unusable —
+    NaN from a sparse bin, or a zero scale from a flat, truly clean dark
+    region. Scanned figures always contain such regions (the plot's black
+    background carries no residual by construction), so figure-type images —
+    precisely the class that ships speckled photo insets — aborted here and
+    their speckle went undetected; the fine speck field then manufactured
+    blocking_score 0.583 / ringing_score 0.773 and got routed to the deblock
+    filter instead. The fix drops uninformative bins (too sparse, or scale ≈ 0
+    — a flat clean region carries no noise information, it is not evidence of
+    absence) and requires ≥3 surviving bins spanning the bright half of the
+    measured range, which is where multiplicative noise shows its growth.
     """
     mean_blur = cv2.GaussianBlur(gray, (0, 0), sigmaX=2.0).astype(np.float32)
     high = cv2.GaussianBlur(gray, (0, 0), sigmaX=1.2).astype(np.float32)
@@ -448,10 +501,44 @@ def _speckle_slope_score(
         s = resids[bins == b]
         scales.append(float(np.median(s)) if s.size >= 200 else np.nan)
     scales = np.asarray(scales, dtype=np.float64)
-    if np.isnan(scales).any() or scales[0] <= 1e-3:
+
+    # Drop uninformative bins: sparse bins are NaN, and a flat clean region
+    # (scale ≈ 0) says nothing about brightness-dependence — classic case is a
+    # scanned figure's solid-black background quintile.
+    valid = np.isfinite(scales) & (scales > 1e-3)
+    if int(np.count_nonzero(valid)) < 3:
         return 0.0
-    growth = (scales[-1] - scales[0]) / max(scales[0], 1e-3)
+    v = scales[valid]
+    # The growth must be measured across a real luminance span: bins clustered
+    # at one brightness cannot exhibit a slope. Require coverage of the upper
+    # half of the bin range — multiplicative growth lives in the bright bins.
+    if v[-1] <= 1e-3:  # brightest surviving bin must carry residual
+        return 0.0
+    growth = (v[-1] - v[0]) / max(v[0], 1e-3)
     return _normalize(float(growth), 0.9, 1.9)
+
+
+def _reduce_grain_floor(img: np.ndarray, strength: float) -> np.ndarray:
+    """Light edge-aware NLM for the fine grain floor (see classify() comment).
+
+    Luminance-only in LAB, chroma untouched, h mapped from the measured floor:
+    h = 3 + 3*strength (3.0..6.0). At these strengths NLM removes the
+    mottled floor while the edge-protect blend keeps structure (measured on
+    the SigShrink speckle figure: 1-12% Canny loss across h=3..10, i.e. the
+    useful range is far inside the router's 18% rejection bar).
+    """
+    lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB)
+    l, a, b = cv2.split(lab)
+    h = 3.0 + 3.0 * float(np.clip(strength, 0.0, 1.0))
+    l_nlm = cv2.fastNlMeansDenoising(l, None, h=h, templateWindowSize=7, searchWindowSize=21)
+    edges = cv2.Canny(l, 45, 130)
+    protect = cv2.GaussianBlur((edges > 0).astype(np.float32), (7, 7), 0)
+    blend = 0.55 + 0.20 * float(np.clip(strength, 0.0, 1.0))
+    l_out = (
+        l.astype(np.float32) * (1.0 - blend * (1.0 - protect))
+        + l_nlm.astype(np.float32) * blend * (1.0 - protect)
+    )
+    return cv2.cvtColor(cv2.merge([np.clip(l_out, 0, 255).astype(np.uint8), a, b]), cv2.COLOR_LAB2RGB)
 
 
 def _reduce_impulse(img: np.ndarray, profile: NoiseProfile) -> np.ndarray:

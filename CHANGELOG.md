@@ -6,6 +6,30 @@ All notable changes to PixRevive are documented here. Format follows
 ## [Unreleased]
 
 ### Added
+- **Phase V0.1 — grain-floor routing + skin-residual validation (beta).** Closes the two
+  gaps the 4/10 (speckle Lena) and 6/10 (teared) live critiques identified. ① The
+  4/10 image's real failure was never the specks (Stage 2 provably confines them to the
+  border ring — probe `.freebuff/probe_stage2_speckle.py`) but the **unremovable grain
+  floor** riding through pre-SR into Real-ESRGAN and out through DDColor as watercolor
+  background. `NoiseRouter` gains a `grain_floor` family (fires at residual_mad ≥ 2.6 +
+  edge structure + no impulse signature — a band no existing family could see: the
+  corpus's grain class sits at residual_mad 3.5–4.0 while clean scans are 1.4–1.9, and
+  the target's residual profile *declines* with luminance, so speckle scoring is blind
+  to it) plus a `grain_floor_nlm` reducer (L-channel NLM h=3+3·strength, Canny
+  edge-protect blend, chroma untouched). Pre-SR's sharpness guard drops 6.0 → **2.5** so
+  grain-class images get the anti-amplitude pass (clean scans 1.7–2.4 keep sharpness).
+  Also fixed a latent Stage 5 dispatch bug: the registry loop passed `on_progress`
+  positionally into Stage 5's `faces` slot, so spatially-gated denoising crashed with
+  "'function' object is not iterable" on every routed run since the A-2 refactor —
+  invisible because `denoising: 0.0` looked like a skip and `add_log` never reaches the
+  SSE stream. Verified live over HTTP: `denoising` 0.0 → 0.488 s, Stage 4b accepted
+  grain_floor_nlm (edge_loss 0.5%), Stage 8 pre-SR smoothing armed at noise 3.75.
+  ② Semantic rule **B3 `skin_residual_damage`**: face-zone white top-hat (k=5, L>12),
+  eye/mouth zones excluded, 1–40 px components, gated on lost evidence (≥5% face-zone
+  loss AND ≥30% co-location) so repaired skin never trips it. Live: fires on teared.jpg
+  output (169 patches, 0.35% of face zone → "V1 refill target") exactly where the
+  critique saw undissolved damage, and on the speckle figure (52 patches), silent on
+  Gate A's pristine corpus. 24 B3+grain tests (367 total, backend paused).
 - **Phase V0 — semantic validation, report-only (beta).** First slice of
   [docs/SEMANTIC_VALIDATION_PLAN.md](docs/SEMANTIC_VALIDATION_PLAN.md): an evidence-state
   classifier plus three read-only semantic rules that run after Stage 12 and can never

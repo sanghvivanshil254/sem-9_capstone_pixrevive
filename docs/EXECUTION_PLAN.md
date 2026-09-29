@@ -325,3 +325,34 @@ corpus, and its only output is an additive `semantic` block in the Restoration R
 **V0 exit gate: met** — zero false positives on the empty-evidence corpus; findings
 target only lost-evidence regions. Next: V1 (SFace-gated targeted regeneration of
 regeneration-candidate regions) once rule calibration data accumulates.
+
+---
+
+## Phase V0.1 — grain-floor routing + skin-residual validation (2026-09-29, done)
+
+Follow-up to V0 driven by two external critiques (speckle Lena 4/10, teared 6/10).
+Diagnosis was measured, not guessed: the Lena figure's failure is NOT the specks —
+under production order (border crop → Stage 0 → Stage 2) both it and its clean metric-twin
+produce Stage-2 masks 100% confined to the border ring (0% deep interior), so the
+watercolor background is born downstream: an unremovable **grain floor** (residual_mad
+3.6 vs 1.4–1.9 for clean scans) rides through a skipped pre-SR pass (noise_score 3.75 ≤ 6.0
+→ "preserving natural sharpness") into Real-ESRGAN, which amplifies it for DDColor to paint.
+Separately, no rule watched skin regions for **undissolved damage** — the teared critique's
+white blotches read as "texture" to Stage 11.
+
+| Item | Status |
+|---|---|
+| NoiseClassifier `grain_floor` family | ✅ fires at residual_mad ≥ 2.6 + edge_density ≥ 0.03 + no impulse signature; family score normalizes 2.6–6.0. Blind-spot rationale: no input-space gate can separate the speckle figure from clean Lena variants (identical on every SpeckSuppressor axis + component morphology ~3000 comps), and the residual profile *declines* with luminance so speckle scoring is structurally blind — the floor band is the only separable signal |
+| `grain_floor_nlm` reducer | ✅ L-channel NLM h=3+3·strength with Canny edge-protect blend (0.55+0.2·strength), chroma untouched; online edge-loss + residual-delta acceptance gate reused from the router |
+| Pre-SR guard 6.0 → 2.5 | ✅ corpus: clean scans 1.68–2.38 keep sharpness; grain class 3.26–4.62 now treated; heavy noise unchanged |
+| Stage 5 dispatch bug (found during live verification) | ✅ registry loop called `method(context, on_progress)` positionally; Stage 5's second slot is `faces`, so every routed run crashed Stage 5 with "'function' object is not iterable" — hidden as `denoising: 0.0` because `add_log` never reaches the SSE stream. Fixed with a keyword call; verified live: `denoising` 0.0 → 0.488 s |
+| B3 `skin_residual_damage` | ✅ face-zone white top-hat (k=5, L>12), eye quadrants + mouth box excluded, 1–40 px components, `_B3_EVIDENCE_MIN`=0.05 lost-face-zone share AND `_B3_EVIDENCE_COLOCATION`=0.30 patch co-location so repaired skin never trips; report-only, face_zone region, V1 refill-target verdict |
+| Tests | ✅ +3 B3 tests (`tests/test_semantic_validator.py`, 21 total) + `TestGrainFloorFamily` 5 tests (`tests/test_margin_robust_noise.py`, incl. end-to-end reduce with edge-loss < 0.18 and a content-masked-MAD fixture fix). Full suite **367 passed, 1 skipped, 105 subtests** with backend paused |
+| Live verification | ✅ speckle figure over HTTP (`denoise=true`): Stage 4b accepted grain_floor_nlm (edge_loss 0.5%, residual 6.06→5.84) + deringing, Stage 8 pre-SR armed at noise 3.75, B3 reports 52 skin patches on output. teared.jpg offline: B3 fires 169 patches (0.35% face zone, evidence_lost 25%) → "V1 refill target", alongside the known A3 hairline candidate; Stage 5 now runs (σ 7.41→1.48) |
+
+**V0.1 exit gate: met** — both critique defects have a measured mechanism, a shipped
+counter-measure, and live output evidence. Remaining known limit: the watercolor
+*structure* hallucination (background inventing objects) is a V1 regeneration problem,
+not a filtering problem — the grain floor now stops feeding it noise, but V1's
+SFace-gated region completion is what rebuilds coherent background/hat/hair-boundary
+structure from surviving evidence.

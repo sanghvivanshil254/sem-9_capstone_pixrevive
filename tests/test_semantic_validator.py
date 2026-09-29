@@ -15,6 +15,7 @@ from ai.validation.semantic_validator import (
     classify_evidence,
     rule_a1_eye_presence,
     rule_a3_hairline_continuity,
+    rule_b3_skin_residual_damage,
     rule_c1_bilateral_structure,
     run_semantic_validation,
 )
@@ -167,12 +168,62 @@ class TestRuleC1Bilateral(unittest.TestCase):
         self.assertIsNone(rule_c1_bilateral_structure(_gray(img), ev, FACE))
 
 
+class TestB3SkinResidual(unittest.TestCase):
+    def test_no_evidence_means_silent(self):
+        """Prime Directive: a face with no lost evidence is never flagged —
+        bright skin texture alone must not fire B3."""
+        rng = np.random.default_rng(7)
+        img = np.full((400, 400, 3), 150, np.uint8)
+        img[FACE["bbox"][1]:FACE["bbox"][3], FACE["bbox"][0]:FACE["bbox"][2]] = (
+            150 + rng.integers(-8, 9, (160, 160, 1))).astype(np.uint8) * np.ones((1, 1, 3), np.uint8)
+        ev = np.zeros((400, 400), np.uint8)
+        self.assertIsNone(rule_b3_skin_residual_damage(_gray(img), ev, FACE))
+
+    def test_bright_patches_on_lost_evidence_fire(self):
+        """White blotches where the evidence mask records lost damage fire an
+        info finding with patch count + share."""
+        img = np.full((400, 400, 3), 150, np.uint8)
+        fx0, fy0, fx1, fy1 = FACE["bbox"]
+        # 12 bright 3px blotches scattered over the lower face (below the eye
+        # band, outside the mouth box)
+        rng = np.random.default_rng(11)
+        placed = 0
+        while placed < 12:
+            px = int(rng.integers(fx0 + 10, fx1 - 10))
+            py = int(rng.integers(fy0 + int(0.62 * (fy1 - fy0)), fy1 - 10))
+            img[py:py + 3, px:px + 3] = (235, 235, 235)
+            placed += 1
+        ev = np.zeros((400, 400), np.uint8)
+        ev[fy0:fy1, fx0:fx1] = 1  # whole face zone lost (60%+ => DESTROYED)
+        out = rule_b3_skin_residual_damage(_gray(img), ev, FACE)
+        self.assertIsNotNone(out)
+        self.assertEqual(out[0]["rule"], "B3.skin_residual_damage")
+        self.assertGreaterEqual(out[0]["residual_patches"], 4)
+        self.assertEqual(out[0]["action"], "report_only")
+
+    def test_excluded_zones_do_not_count(self):
+        """Bright pixels confined to eye quadrants / mouth box (sclera, teeth)
+        are natural anatomy and must not fire B3."""
+        img = np.full((400, 400, 3), 150, np.uint8)
+        fx0, fy0, fx1, fy1 = FACE["bbox"]
+        fw, fh = fx1 - fx0, fy1 - fy0
+        # fill the two eye quadrants + mouth box with near-white
+        for (rx0, rx1) in ((0.10, 0.48), (0.52, 0.90)):
+            img[fy0 + int(0.15 * fh):fy0 + int(0.55 * fh),
+                fx0 + int(rx0 * fw):fx0 + int(rx1 * fw)] = (240, 240, 240)
+        img[fy0 + int(0.66 * fh):fy0 + int(0.90 * fh),
+            fx0 + int(0.32 * fw):fx0 + int(0.68 * fw)] = (240, 240, 240)
+        ev = np.zeros((400, 400), np.uint8)
+        ev[fy0:fy1, fx0:fx1] = 1
+        self.assertIsNone(rule_b3_skin_residual_damage(_gray(img), ev, FACE))
+
+
 class TestRunner(unittest.TestCase):
     def test_pristine_image_yields_zero_findings(self):
         img = _canvas()
         out = run_semantic_validation(img, np.zeros((400, 400), np.uint8), [FACE])
         self.assertEqual(out["findings"], [])
-        self.assertEqual(out["summary"], {"eyes": 0, "hair": 0, "garment": 0})
+        self.assertEqual(out["summary"], {"eyes": 0, "hair": 0, "garment": 0, "skin": 0})
         self.assertEqual(out["version"], "v0-report-only")
 
     def test_prime_directive_no_findings_touch_original(self):

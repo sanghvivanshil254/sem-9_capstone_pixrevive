@@ -61,6 +61,21 @@ _TORSO_MIN_DENSITY = 0.010         # min edge density for "structure exists"
 _TORSO_ASYMMETRY_RATIO = 0.45      # min(minor/major) density ratio to PASS
 _TORSO_MIN_SIDE_PX = 24            # skip tiny bboxes (unreliable geometry)
 
+# B3: skin-residual-damage watch (V0.1, 2026-09-29). Motivated by the
+# teared.jpg user review: white blotches on cheek/nose/chin read as
+# undissolved damage dressed as texture — no rule watched skin. B3 counts
+# bright residual patches (white top-hat) inside the face zone, but ONLY
+# where the evidence mask records lost damage; surviving clean skin is
+# truth and stays silent (Prime Directive).
+_B3_TOPHAT_K = 5                   # blotches are 1-4px; k=5 isolates them
+_B3_BRIGHT_L = 12.0                # min L-units above local opening
+_B3_MAX_COMP_AREA = 40             # components above this are regions, not blotches
+_B3_MIN_COUNT = 4                  # fewer isolated patches = texture, not residue
+_B3_MIN_SHARE = 0.004              # ...or >=0.4% of the face zone in blotches
+_B3_EVIDENCE_MIN = 0.05            # >=5% of the face zone must be lost evidence
+_B3_EVIDENCE_COLOCATION = 0.30     # >=30% of a patch's pixels on evidence>0
+_B3_MOUTH_BOX = (0.32, 0.66, 0.68, 0.90)   # x0,y0,x1,y1 fractions of bbox
+
 
 # --------------------------------------------------------------------------
 # Evidence-state classification
@@ -285,8 +300,98 @@ def rule_c1_bilateral_structure(gray: np.ndarray, evidence_mask: np.ndarray,
     return None
 
 
+def rule_b3_skin_residual_damage(gray: np.ndarray, evidence_mask: np.ndarray,
+                                 face: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """B3: undissolved damage residue on skin — bright residual patches in the face zone.
+
+    The user review of the teared.jpg restoration flagged white blotches on
+    cheek/nose/chin as *undissolved damage dressed as texture*: the evidence
+    mask said skin was lost there, the repair filled it, but bright residue
+    survived where clean skin should be. No V0 rule watched skin (A1 eyes,
+    A3 hair, C1 torso). B3 counts bright top-hat patches inside the face
+    bbox, excluding the eye quadrants and mouth box (sclera/teeth are
+    legitimately bright), and fires only when the evidence mask records real
+    lost damage in the zone — a face with no lost evidence is never flagged
+    (Prime Directive; pristine corpus must stay silent).
+
+    Report-only info finding; a natural V1b refill target.
+    """
+    h_img, w_img = gray.shape[:2]
+    bbox = face.get("bbox")
+    if not bbox or len(bbox) < 4:
+        return None
+    x0, y0, x1, y1 = [int(round(v)) for v in bbox[:4]]
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(w_img, x1), min(h_img, y1)
+    fw, fh = x1 - x0, y1 - y0
+    if fw < _TORSO_MIN_SIDE_PX or fh < _TORSO_MIN_SIDE_PX:
+        return None
+
+    zone = np.zeros((h_img, w_img), np.uint8)
+    zone[y0:y1, x0:x1] = 1
+    zone_area = int(np.count_nonzero(zone))
+
+    # Evidence gate: only faces that actually lost damage get watched.
+    lost = float(np.count_nonzero(evidence_mask[zone > 0])) / zone_area
+    if lost < _B3_EVIDENCE_MIN:
+        return None
+
+    # Bright residual patches: white top-hat of the face zone, excluding the
+    # eye quadrants (sclera/catch-lights) and the mouth box (teeth).
+    Lf = gray.astype(np.float32)
+    se = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_B3_TOPHAT_K, _B3_TOPHAT_K))
+    th = Lf - cv2.morphologyEx(Lf, cv2.MORPH_OPEN, se)
+    cand = ((th > _B3_BRIGHT_L) & (zone > 0)).astype(np.uint8)
+
+    excl = np.zeros((h_img, w_img), np.uint8)
+    for name, (rx0, rx1) in _EYE_QUARTERS.items():
+        ey0, ey1 = _EYE_BAND
+        excl[y0 + int(ey0 * fh):y0 + int(ey1 * fh),
+             x0 + int(rx0 * fw):x0 + int(rx1 * fw)] = 1
+    mx0, my0, mx1, my1 = _B3_MOUTH_BOX
+    excl[y0 + int(my0 * fh):y0 + int(my1 * fh),
+         x0 + int(mx0 * fw):x0 + int(mx1 * fw)] = 1
+    cand[excl > 0] = 0
+
+    n, labm, stats, _ = cv2.connectedComponentsWithStats(cand * 255, connectivity=8)
+    kept = 0
+    kept_area = 0
+    for i in range(1, n):
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        if not (1 <= area <= _B3_MAX_COMP_AREA):
+            continue
+        # Co-location gate: a patch only counts when most of its pixels sit on
+        # lost evidence (the verdict claims "residue ON lost damage", not
+        # "bright stuff anywhere in the face"). Grain specks on surviving skin
+        # are the denoiser's business, not undissolved damage.
+        comp = labm == i
+        overlap = float(np.count_nonzero(comp & (evidence_mask > 0)))
+        if overlap / max(area, 1) < _B3_EVIDENCE_COLOCATION:
+            continue
+        kept += 1
+        kept_area += area
+    share = kept_area / float(zone_area)
+    if kept < _B3_MIN_COUNT and share < _B3_MIN_SHARE:
+        return None
+    return [{
+        "rule": "B3.skin_residual_damage",
+        "region": "face_zone",
+        "evidence_state": "DESTROYED" if lost >= DESTROYED_MIN else "AMBIGUOUS",
+        "residual_patches": kept,
+        "residual_share": round(share, 4),
+        "evidence_lost_share": round(lost, 3),
+        "severity": "info",
+        "action": "report_only",
+        "verdict": (
+            f"{kept} bright residual patches ({share:.1%} of face zone) remain "
+            "on skin where evidence records lost damage — undissolved-damage "
+            "candidate (B3, V1 refill target)"
+        ),
+    }]
+
+
 RULES = (rule_a1_eye_presence, rule_a3_hairline_continuity,
-         rule_c1_bilateral_structure)
+         rule_c1_bilateral_structure, rule_b3_skin_residual_damage)
 
 
 # --------------------------------------------------------------------------
@@ -321,7 +426,7 @@ def run_semantic_validation(image_rgb: np.ndarray,
     for f in all_findings:
         if f.get("evidence_state") == "ORIGINAL":
             f["action"] = "none_evidence_governs"
-    summary = {"eyes": 0, "hair": 0, "garment": 0}
+    summary = {"eyes": 0, "hair": 0, "garment": 0, "skin": 0}
     for f in all_findings:
         if f["rule"].startswith("A1."):
             summary["eyes"] += 1
@@ -329,6 +434,8 @@ def run_semantic_validation(image_rgb: np.ndarray,
             summary["hair"] += 1
         elif f["rule"].startswith("C1."):
             summary["garment"] += 1
+        elif f["rule"].startswith("B3."):
+            summary["skin"] += 1
     return {
         "version": "v0-report-only",
         "faces_evaluated": len(faces or []),

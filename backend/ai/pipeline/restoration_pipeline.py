@@ -605,14 +605,23 @@ class RestorationPipeline(
             # noisy scans; quiet images keep their natural sharpness.
             if spec.id == "pre_sr":
                 noise_score = float(context.image_metadata.get("noise_score", 0.0))
-                if noise_score <= 6.0:
+                if noise_score <= 2.5:
                     context.add_log(
-                        "Stage 8 Pre-SR: noise_score <= 6.0 - preserving natural sharpness."
+                        "Stage 8 Pre-SR: noise_score <= 2.5 - preserving natural sharpness."
                     )
                     continue
+                context.add_log(
+                    f"Stage 8 Pre-SR: noise_score {noise_score:.2f} > 2.5 - "
+                    "running pre-SR smoothing pass to keep grain from being amplified."
+                )
 
             method = getattr(self, spec.method)
-            method(context, on_progress)
+            # on_progress is passed BY KEYWORD: Stage 5's second positional
+            # slot is `faces`, not the callback — a positional call bound the
+            # callback into `faces` and Stage 5 died with "'function' object
+            # is not iterable" on every registry-dispatched run (measured
+            # 2026-09-29, offline run of the speckle figure).
+            method(context, on_progress=on_progress)
 
             # -- inline composition that belongs to a specific stage -----------
             if spec.id == "denoise":

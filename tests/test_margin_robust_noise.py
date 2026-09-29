@@ -40,7 +40,7 @@ from ai.analysis.content_region import content_mask, robust_sigma
 from ai.analysis.quality_analyzer import QualityAnalyzer
 from ai.pipeline.pipeline_context import PipelineContext
 from ai.pipeline.restoration_pipeline import RestorationPipeline
-from ai.postprocessing.noise_router import NoiseClassifier
+from ai.postprocessing.noise_router import NoiseClassifier, NoiseRouter
 
 
 def _case8_path():
@@ -241,6 +241,79 @@ class TestGrainFieldGate(unittest.TestCase):
         meta = QualityAnalyzer.analyze(rgb)
         ctx.image_metadata.update(meta)
         self.assertGreater(meta["damage_percentage"], 0.5, "tear must register as damage")
+
+
+class TestGrainFloorFamily(unittest.TestCase):
+    """The fine grain/scan-noise floor family (added 2026-09-29).
+
+    Measured corpus separation on residual_mad: clean scans 1.4-1.9, grain
+    floor 3.5-4.0 (all Lena variants incl. the SigShrink speckle figure),
+    heavy noise 13.7+ (owned by impulse/random). The old battery was blind
+    between 2 and 13: the speckle figure routed to deblock (blocking 0.58 /
+    ringing 0.77 manufactured by the speck field) and its grain rode through
+    SR into colorization — the 'watercolor background' failure class.
+    """
+
+    def _classify_path(self, path):
+        bgr = cv2.imread(path)
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        meta = QualityAnalyzer.analyze(rgb)
+        return NoiseClassifier.classify(rgb, meta)
+
+    def test_speckle_figure_routes_to_grain_floor(self):
+        """case8 (== SigShrink speckle-Lena figure) must carry grain_floor."""
+        prof = self._classify_path(_case8_path())
+        self.assertIn("grain_floor", prof.detected_types)
+
+    def test_clean_scans_stay_silent(self):
+        """No grain_floor on clean/near-clean scans (residual_mad <= 1.9)."""
+        for name in ("case10_spiderweb_lips.jpg", "case11_minor_creases.jpg",
+                     "case12_foxing_spots.png", "screenshot_portrait_3.jpg"):
+            path = os.path.join(os.path.dirname(__file__), "restoration_dataset", "damaged", name)
+            prof = self._classify_path(path)
+            self.assertNotIn("grain_floor", prof.detected_types,
+                             f"{name}: {prof.metrics['residual_mad']:.2f}")
+
+    def test_heavy_noise_keeps_its_own_families(self):
+        """case1_noisy_lena must NOT be downgraded to a grain-floor footnote."""
+        path = os.path.join(os.path.dirname(__file__), "restoration_dataset", "damaged", "case1_noisy_lena.jpg")
+        prof = self._classify_path(path)
+        self.assertNotIn("grain_floor", prof.detected_types)
+        self.assertTrue(any(t in prof.detected_types for t in ("salt_and_pepper", "impulse", "gaussian")))
+
+    def test_flat_synth_never_flags_grain_floor(self):
+        """A flat synthetic with tiny texture must stay silent (edge-density
+        guard: residual without structure is not a grain floor)."""
+        rgb = np.full((300, 300, 3), 128, np.uint8)
+        rng = np.random.default_rng(3)
+        rgb[:, :, 0] = np.clip(128 + rng.normal(0, 5, (300, 300)), 0, 255).astype(np.uint8)
+        meta = QualityAnalyzer.analyze(rgb)
+        prof = NoiseClassifier.classify(rgb, meta)
+        self.assertNotIn("grain_floor", prof.detected_types)
+
+    def test_grain_nlm_reduces_floor_without_structure_collapse(self):
+        """End-to-end reduce(): the accepted candidate must lower the residual
+        floor and stay inside the router's edge-loss ceiling."""
+        rgb = _case8_rgb()
+        meta = QualityAnalyzer.analyze(rgb)
+        ctx = PipelineContext(rgb.copy())
+        ctx.image_metadata.update(meta)
+        prof = NoiseClassifier.classify(rgb, meta)
+        if "grain_floor" not in prof.detected_types:
+            self.skipTest("fixture below grain floor on this run")
+        out = NoiseRouter.reduce(ctx, prof)
+        # Use the classifier's own content-masked Gaussian-residual metric —
+        # a global MAD is 0 on this mostly-flat fixture (the very dilution
+        # property this module documents).
+        prof_after = NoiseClassifier.classify(out, meta)
+        self.assertLess(prof_after.metrics["residual_mad"], prof.metrics["residual_mad"],
+                        "grain floor must decrease")
+        before_gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+        out_gray = cv2.cvtColor(out, cv2.COLOR_RGB2GRAY)
+        e1 = cv2.Canny(before_gray, 60, 150)
+        e2 = cv2.Canny(out_gray, 60, 150)
+        loss = (float(np.sum(e1 > 0)) - float(np.sum(e2 > 0))) / max(float(np.sum(e1 > 0)), 1.0)
+        self.assertLess(loss, 0.18, "edge loss must stay inside the router bar")
 
 
 if __name__ == "__main__":

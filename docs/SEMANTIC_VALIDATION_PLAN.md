@@ -160,6 +160,65 @@ Key wiring facts (already true in the codebase):
 - *Exit criteria: live hybrid run where a validator finding causes a targeted
   completion that passes the identity gate and is disclosed in the report.*
 
+#### V1 addendum — design from measured V0 data (2026-09-29)
+
+V0's numbers reshape V1. What the corpus and live runs actually showed:
+
+| Measured signal | Count | V1 consequence |
+|---|---|---|
+| Gate A pristine FP | **0 / 17** | Precondition for activating any rule is met |
+| A3 regeneration candidates | 2/17 damaged fixtures + teared live (texture_std 47.2 raw / 30.3 post-fill) | The only finding class wired to an action in V1 |
+| A1 DESTROYED w/ residual structure | 4 (case3/case9 eyes, raw battery) | Stays report-only in V1 — residual structure is evidence to preserve, not overwrite |
+| A1 AMBIGUOUS | 17 (all `texture_std=-1`, structure proxy N/A) | Never triggers generation until calibrated (V3 sweep); pure notes |
+| **Live teared.jpg Stage 12** | **skipped** — frame 32.96% < 35% bar, worst face 25.15% < 55% bar; LaMa filled the 33% | **The pivot**: V1 cannot assume Stage 12 ran. Semantic completion must apply to the LaMa canvas too |
+
+The decisive live-path fact: teared.jpg's hair band is genuinely lost evidence that
+the whole-frame Stage-12 gate will *never* touch on this class of image, yet Stage 13
+still classifies it DESTROYED and A3 still calls it a regeneration candidate on the
+output canvas. Region-scoped completion is the only mechanism that can act on it.
+
+Design (per slice, each independently shippable):
+
+- **V1a — findings→mask plumbing (no generation).** Compiler turns
+  action="regeneration candidate" findings into region masks: finding band ∩
+  evidence>0, dilated, clipped to the face bbox neighborhood. Stage 13 emits a
+  `semantic_actionable` list alongside the report block. Unit tests assert mask
+  geometry against the bbox anchors on fixtures. *Exit: masks verified, zero
+  generation code, Gate A still 0 FP.*
+- **V1b — LaMa region completion (no diffusion).** When candidates exist and the
+  `reimagine` opt-in is set, re-fill **only** the candidate masks with the existing
+  LaMa path (seconds, no new weights, no resource-tier drama), then:
+  evidence composite re-asserted bytewise outside the mask; SFaceIdentityGate
+  pre/post cosine — **delta-gated** (post ≥ pre − margin, not absolute 0.42, because
+  H4 measured that destroyed-face references can be noise-dominated);
+  pixel-quality guard reverts the region if SSIM inside the band got worse.
+  Report `semantic` findings gain `action: regenerated | attempted-rolled-back |
+  candidate-reported` with SFace cosines. Overlay marks semantic zones cyan.
+  *Exit: teared.jpg live run with the hair band completed, identity delta pass,
+  Gate A rerun still 0 FP.*
+- **V1c — diffusion region completion.** Route candidates through the Stage-12
+  engine region-cropped (SD1.5 inpaint + FaceID conditioning + reroll ladder) only
+  when the resource tier ≥ MINIMAL; LaMa result is the always-available floor.
+  *Exit per original plan: case9 + teared live, SFace verdicts recorded.*
+
+Bounded loop: one semantic pass in V1 (the plan's 2-pass loop is a V3 calibration
+question). If the finding persists with unchanged evidence state after the pass,
+accept and disclose "attempted, unresolved" — the prime directive forbids endless
+retrying against evidence that isn't there.
+
+Risks specific to the measured data: LaMa's frame-wide fill may beat a region-only
+refill inside the band (context argument) — hence the SSIM revert guard and honest
+`attempted-rolled-back` disclosure; textured headwear above a face can mimic the A3
+signature (corpus has none — add a headwear fixture to the V3 sweep before V1c);
+SFace absolute thresholds may be unachievable at heavy face destruction (H4 measured
+0.095 on 60%-destroyed references) — hence delta-gating in V1b, absolute gates
+revisited only in V1c with reroll headroom.
+
+Pre-registered no-go triggers: any Gate A regression from mask dilation; SFace
+delta-gate failing to separate refill quality across ≥3 real runs; region refill
+SSIM-worse than the pre-pass canvas on the corpus majority. Any of these → stop
+before V1c, recalibrate V3-style (fixed seed, one variable), re-gate.
+
 ### V2 — Garment & continuity rules `~2–3 sessions`
 - C1/C2 + B1/B2 active; mirror-constrained conditioning for C1 (surviving-side
   crop as IP reference — the existing adapter path, no new weights).
