@@ -757,3 +757,46 @@ class FinishStagesMixin:
 
     # ── Main Restore Entry Point ──────────────────────────────────────────────
 
+
+    def _stage_13_semantic_validate(self, context: PipelineContext,
+                                    on_progress: Optional[Callable]) -> None:
+        """Stage 13 (Phase V0, docs/SEMANTIC_VALIDATION_PLAN.md): report-only
+        semantic rule battery over the evidence mask.
+
+        NEVER touches pixels (Prime Directive). Classifies the lost-evidence
+        regions (anatomy eye quadrants, hair band, garment torso) and emits
+        findings into metadata["semantic"] for the report. In V0 every finding
+        is disclosure-only; V1 promotes them to targeted re-imagine masks.
+        """
+        if on_progress:
+            on_progress("semantic_validate", 99, "Validating semantic plausibility...")
+        context.start_timer("semantic_validate")
+        try:
+            from ai.validation.semantic_validator import run_semantic_validation
+
+            meta = context.image_metadata
+            masks = context.damage_masks
+            evidence = None
+            for key in ("final", "inpaint", "damage"):
+                m = masks.get(key)
+                if m is not None and np.any(m > 0):
+                    evidence = (m > 0).astype(np.uint8)
+                    break
+            if evidence is None:
+                evidence = np.zeros(context.working_image.shape[:2], np.uint8)
+            block = run_semantic_validation(
+                context.working_image, evidence,
+                meta.get("faces") or [])
+            meta["semantic"] = block
+            n = len(block.get("findings") or [])
+            context.add_log(
+                f"Stage 13 Semantic: {n} finding(s) across "
+                f"{block.get('faces_evaluated', 0)} face(s) (report-only).")
+        except Exception as exc:  # noqa: BLE001 — validator must never break the pipeline
+            logger.warning("Stage 13 semantic validation failed: %s", exc)
+            context.image_metadata["semantic"] = {
+                "version": "v0-report-only", "error": str(exc),
+                "findings": [], "summary": {"eyes": 0, "hair": 0, "garment": 0},
+            }
+        finally:
+            context.end_timer("semantic_validate")

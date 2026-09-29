@@ -260,6 +260,10 @@ def _build(context: PipelineContext) -> Dict[str, Any]:
         "flagged": flags,
         "colorization_disclaimer": bool(was_colorized),
         "reimagine": reimagine_block,
+        # Phase V0 (docs/SEMANTIC_VALIDATION_PLAN.md): report-only semantic
+        # findings — evidence-conditioned anatomy/garment plausibility.
+        # Disclosure-only; findings never alter pixels and never fire in V0.
+        "semantic": meta.get("semantic"),
         "stage_timings": dict(context.stage_timings),
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }

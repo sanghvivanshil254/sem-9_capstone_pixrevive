@@ -6,6 +6,23 @@ All notable changes to PixRevive are documented here. Format follows
 ## [Unreleased]
 
 ### Added
+- **Phase V0 — semantic validation, report-only (beta).** First slice of
+  [docs/SEMANTIC_VALIDATION_PLAN.md](docs/SEMANTIC_VALIDATION_PLAN.md): an evidence-state
+  classifier plus three read-only semantic rules that run after Stage 12 and can never
+  touch a pixel. `ai/validation/semantic_validator.py` classifies each face-anchored
+  region's evidence mask (SURVIVING ≤15% lost, DESTROYED ≥60%, AMBIGUOUS between) and
+  evaluates A1 eye-presence (dark-blob structure proxy, destroyed/ambiguous quadrants
+  only), A3 hairline continuity (destroyed + textured surviving adjacent hair →
+  "regeneration candidate (V1)"; destroyed + flat → "possible bald" note), and C1
+  bilateral garment symmetry (Canny run once on the full image, then masked —
+  masked-Canny manufactures fake boundary edges, measured). Prime directive enforced:
+  findings target only lost-evidence regions; surviving evidence (bald/blind/injured)
+  is truth and is never proposed for modification. Wired as internal Stage 13
+  (`semantic_validate`, hidden from the frontend stage list) and surfaces as an additive
+  `semantic` block in the Restoration Report. Corpus gate (`scripts/corpus_semantic_gate.py`):
+  Gate A — 17 pristine images with empty evidence masks → 0 false positives; damaged
+  corpus → 23 plausible findings; live teared.jpg run → exactly the expected hairline
+  regeneration candidate. 18 new unit tests (359 total).
 - **Phase H4 — FaceID-class identity conditioning (beta).** The H3 sweep's structural fix,
   now implemented: generation is conditioned on a trained *identity* embedding instead of a
   CLIP embedding of a damaged crop. `ai/validation/faceid_embedder.py` computes 512-d

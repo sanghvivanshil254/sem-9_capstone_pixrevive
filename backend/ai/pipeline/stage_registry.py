@@ -299,6 +299,21 @@ STAGE_REGISTRY: List[StageSpec] = [
         debug_snapshot="12_after_reimagine",
         route_gate="enable_reimagine",
     ),
+    StageSpec(
+        # Phase V0 — semantic validation (docs/SEMANTIC_VALIDATION_PLAN.md):
+        # report-only rule battery over the evidence mask (anatomy inventory,
+        # garment continuity). NEVER touches pixels (Prime Directive) —
+        # findings are metadata for the report; internal so the frontend dot
+        # row is unchanged.
+        id="semantic_validate",
+        name="Semantic plausibility validation",
+        method="_stage_13_semantic_validate",
+        progress_pct=99,
+        progress_message="Validating semantic plausibility...",
+        debug_snapshot=None,
+        route_gate=None,
+        extra={"internal": True},
+    ),
 ]
 
 # Terminal events (not stages — the dot row hides at 100%).

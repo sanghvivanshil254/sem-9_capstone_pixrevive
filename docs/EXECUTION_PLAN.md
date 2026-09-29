@@ -300,3 +300,28 @@ audit: **320 passed, 1 skipped, 105 subtests**. Known host quirk (documented, no
 bug): running the pytest suite while the backend server holds torch weights can segfault
 the runner (access violation inside torch model init under memory pressure) — pause the
 server for suite runs, as was done for the green run above.
+
+---
+
+## Phase V0 — semantic validation, report-only (2026-09-29, done)
+
+First slice of [docs/SEMANTIC_VALIDATION_PLAN.md](docs/SEMANTIC_VALIDATION_PLAN.md).
+V0 ships the evidence-state classifier plus three read-only rules that run after the
+hybrid tier and **cannot modify pixels** — its exit gate is zero false positives on the
+corpus, and its only output is an additive `semantic` block in the Restoration Report.
+
+| Item | Status |
+|---|---|
+| Evidence-state classification | ✅ `ai/validation/semantic_validator.py` — per face-anchored region (eye quadrants, hair band, torso band): SURVIVING ≤15% lost / DESTROYED ≥60% / AMBIGUOUS between. Fixed a measured denominator bug (region masks are full-canvas-shaped; `.size` deflated lost-share ~40×) |
+| A1 eye_presence | ✅ fires only on DESTROYED/AMBIGUOUS quadrants; dark-blob structure proxy → info/warning. Silent on repaired output (prime directive) |
+| A3 hairline_continuity | ✅ destroyed + textured surviving adjacent hair → "regeneration candidate (V1)"; destroyed + flat → "possible bald" info note; surviving hair is truth — silent |
+| C1 bilateral_structure | ✅ torso band edge-density asymmetry; Canny runs **once on the full image then masked** (masked-Canny manufactures fake boundary edges ~0.05 density on flat sides — measured). Needs half-destroyed torso geometry to fire; synthetic probes pass |
+| Stage wiring | ✅ internal Stage 13 `semantic_validate` after reimagine (`extra={"internal": True}` keeps it out of `frontend_stages()`); evidence = `damage_masks["final"/"inpaint"/"damage"]`; error branch surfaces `status:"error"`; timing in stage_timings |
+| Report block | ✅ additive `semantic` in the Restoration Report: version, faces_evaluated, findings, summary, prime directive text |
+| Corpus gate | ✅ `scripts/corpus_semantic_gate.py` — **Gate A PASS**: 17 pristine images with empty evidence masks → 0 findings (production-correct: Stage 13 sees the fully-repaired canvas, not the raw input); damaged corpus → 23 plausible findings; teared.jpg → both eyes DESTROYED w/ residual iris-like structure + hairline regeneration candidate. JSON at `test_artifacts/semantic_v0_corpus.json` |
+| Tests | ✅ 18 unit tests in `tests/test_semantic_validator.py` (classification incl. denominator regression, rule firing/purity, prime directive, no-faces case). Full suite **359 passed, 1 skipped, 105 subtests** with the backend paused |
+| Live verification | ✅ teared.jpg via `/api/process-stream` (reimagine=true): pipeline repairs both eye regions → A1 correctly silent on output; the destroyed hair band with textured surviving adjacent hair yields exactly one A3 finding ("regeneration candidate (V1)") — the V1 hook working as designed. 0.034 s runtime |
+
+**V0 exit gate: met** — zero false positives on the empty-evidence corpus; findings
+target only lost-evidence regions. Next: V1 (SFace-gated targeted regeneration of
+regeneration-candidate regions) once rule calibration data accumulates.

@@ -65,7 +65,9 @@ class TestStageRegistry(unittest.TestCase):
     def test_frontend_export_excludes_internal_stages(self):
         external_ids = {s.id for s in frontend_stages()}
         internal_ids = {s.id for s in STAGE_REGISTRY} - external_ids
-        self.assertEqual(internal_ids, {"refresh_faces"})
+        # refresh_faces: re-detection sub-step; semantic_validate: Phase-V0
+        # report-only battery (no user-facing progress dot by design).
+        self.assertEqual(internal_ids, {"refresh_faces", "semantic_validate"})
         # Exported ids + edge events == everything a live stream may emit.
         self.assertEqual(set(stage_ids()), external_ids | {e.id for e in EDGE_EVENTS})
 
