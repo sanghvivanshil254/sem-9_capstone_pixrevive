@@ -181,7 +181,7 @@ PixRevive/
 │
 ├── scripts/
 │   ├── check_progress_stream.py              # SSE audit: monotonic %, known stage ids, terminal complete
-│   └── diagnostics/                          # Salvaged benchmark_runner, full_dataset_sanity_sweep
+│   └── benchmark_quality.py                  # NIQE/SSIM benchmark ruler + regression diff
 │
 ├── e2e/                                      # Playwright specs (use CDP Chrome — Playwright download not permitted)
 ├── docs/                                     # EXECUTION_PLAN, taxonomy mapping, baselines
@@ -215,3 +215,6 @@ PixRevive/
 | **`map`** | View this navigation map ([CODEBASE_MAP.md](file:///d:/Desktop/kapstone/kapstone/PixRevive/CODEBASE_MAP.md)) |
 | **`test`** | Run pytest: `$env:PYTHONPATH='backend'; & "C:\Users\sangh\AppData\Roaming\Python\Python312\Scripts\pytest.exe" tests/` |
 | **`ddcolor-setup`**| Install DDColor: `& "C:\Program Files\Python312\python.exe" backend/ai/install_ddcolor.py` |
+
+> Historical maintenance tools (benchmark runner, sanity sweep, per-phase probes) were
+> removed in the 2026-09-29 compaction; retrieve them from git history if ever needed.

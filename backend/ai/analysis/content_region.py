@@ -109,14 +109,6 @@ def content_mask(
     return content
 
 
-def content_pixels(img: np.ndarray, mask: Optional[np.ndarray] = None) -> np.ndarray:
-    """Flat array of pixel values inside the content region (uint8 or float input)."""
-    m = mask if mask is not None else content_mask(img)
-    if img.ndim == 2:
-        return img[m > 0]
-    return img[m > 0]
-
-
 def _dominant_margin_value(gray_u8: np.ndarray) -> Optional[int]:
     """Return the luminance value of a flat scanner margin, or None.
 

@@ -12,10 +12,11 @@ node_modules/
 /playwright/.auth/
 
 # --- Pipeline run artifacts (never commit; regenerated per run) ---
-debug_output/
+debug_output*/
 backend/debug_output/
 test_artifacts/
 backend/temp_results/
+.pytest_cache/
 
 # --- Training data (large, local-only) ---
 backend/training_data/bw/

@@ -4,9 +4,9 @@
 > decision gates (5.2 archive, 5.4 prune) and frontend items (5.5–5.7).
 > See [CHANGELOG.md](../CHANGELOG.md).
 
-Turns `docs/DEAD_CODE_REMOVAL.md` (D#), `docs/IMPROVEMENT_SUGGESTIONS.md`
-(U-#/Q-#/A-#/O-#), and `docs/DAMAGE_TAXONOMY_MAPPING.md` (T#) into an ordered, verifiable
-work sequence. Each phase ends with a **green gate** — do not advance until it passes.
+Consolidates the retired `DEAD_CODE_REMOVAL.md` (D#) and `IMPROVEMENT_SUGGESTIONS.md`
+(U-#/Q-#/A-#/O-#) inventories plus `docs/DAMAGE_TAXONOMY_MAPPING.md` (T#) into an ordered,
+verifiable work sequence. Each phase ends with a **green gate** — do not advance until it passes.
 
 **Defaults chosen** (questionnaire dismissed — all reversible, flagged where a decision
 gate exists): keep the waterfall engine and archive the orchestrator · build the
@@ -38,7 +38,7 @@ PYTHONPATH=backend "C:/Users/sangh/AppData/Roaming/Python/Python312/Scripts/pyte
 |---|---|---|---|
 | 0.1 | `git init` + initial commit (no repo exists in this checkout — deletions must be revertible before anything else) | — | clean baseline commit |
 | 0.2 | Extend `.gitignore`: `debug_output/`, `test_artifacts/`, `test-results/`, `backend/temp_results/`, `__pycache__/`, `*.pyc`, `backend/training_data/bw|color/` | D20 | git status clean of artifacts |
-| 0.3 | Run full pytest suite; record pass/fail baseline + durations in `docs/baseline_test_run.md` | — | known-good starting point |
+| 0.3 | Run full pytest suite; record pass/fail baseline + durations (log since removed — see git history) | — | known-good starting point |
 | 0.4 | Run `check_progress_stream.py` against a live backend once; record emitted stage sequence | U-7 baseline | stage-order reference |
 
 **Gate:** pytest baseline recorded; artifacts untracked.
@@ -49,7 +49,7 @@ PYTHONPATH=backend "C:/Users/sangh/AppData/Roaming/Python/Python312/Scripts/pyte
 
 | # | Task | Ref |
 |---|---|---|
-| 1.1 | Salvage `benchmark_runner.py` + `full_dataset_sanity_sweep.py` → `scripts/diagnostics/`; fix imports if needed | D21 |
+| 1.1 | Salvage `benchmark_runner.py` + `full_dataset_sanity_sweep.py` → `scripts/diagnostics/` (since removed — see git history); fix imports if needed | D21 |
 | 1.2 | Delete `test_artifacts/*.py` (~80 files); `git rm -r --cached test_artifacts debug_output test-results` | D21/D22 |
 | 1.3 | Delete `backend/tests/run_pipeline_tests.py`; move `backend/tests/metrics.py` → `tests/metrics.py` | D23 |
 | 1.4 | Remove `realesr-general-x4v3.pth` entry from `download_weights.py`; remove `zeroscratches` (+ comment block) from `backend/requirements.txt` | D9/D10 |
@@ -356,3 +356,92 @@ counter-measure, and live output evidence. Remaining known limit: the watercolor
 not a filtering problem — the grain floor now stops feeding it noise, but V1's
 SFace-gated region completion is what rebuilds coherent background/hat/hair-boundary
 structure from surviving evidence.
+
+---
+
+## Phase V0.2 — paste-seam & anatomy-loss remediation plan (2026-09-29, planned)
+
+Three defects on the same before/after pair were stage-attributed via archived
+`PIXREVIVE_DEBUG` snapshots (evidence: `test_artifacts/contact_sheet/defect_forensics.html`,
+probes `.freebuff/probe_defect_forensics.py` + debug archives `debug_output_speckle/`,
+`debug_output_teared/`):
+
+| # | Defect | Attribution (measured) |
+|---|---|---|
+| 1 | Square patch at the eye (speckle figure) | GFPGAN paste rect 255×167 px on the 435×342 frame; detected eye landmark sits **outside** it; LaMa mask covers only 7.04% of the eye box → not LaMa |
+| 2 | Ear missing (teared) | 34.9% of the ear region was in the LaMa damage mask; ear already gone at the `03_after_inpaint` frame; ear lies outside the face bbox so MaskRefiner's anatomy protection (102 px) never reached it |
+| 3 | Collar right side missing (teared) | 27.5% of the collar region masked; fold line inside the flake cluster → LaMa filled plain fabric |
+
+Root cause in one line: restore-then-paste blends with a rectangle, inpainters
+complete texture not anatomy, and no stage's contract asks "is the meaning still
+there?" — V0's rules ask it, but only report.
+
+### Workstream W1 — GFPGAN paste-alignment guard (smallest, do first)
+
+The aligned-crop composite in `_restore_single_face`
+(`ai/restoration/face_restorer.py`) already alpha-blends with feathering, but
+nothing verifies the **paste footprint** on the canvas is anatomically aligned
+before `paste_faces_to_input_image` (line ~385). Steps:
+
+1. **Detect the paste footprint per face**: warp the crop's `alpha_mask` back to
+   canvas coordinates via `affine_mat` (inverse mapping) and composite all faces'
+   footprints into one `paste_footprint` mask (uint8, 0/255) at the end of
+   `_restore_single_face`.
+2. **Landmark containment check**: for each face, map
+   `helper.all_landmarks_5[i]` to canvas coords; require both eye landmarks to
+   fall inside the footprint's connected component. On failure: log a WARN,
+   mark `image_metadata["gfpgan_paste_misaligned"]`, and either (a) rerun that
+   face with `fidelity_weight` lowered 0.85 → 0.5, or (b) skip the paste for the
+   face (keep original pixels). Decision gate: containment failure + landmark-to-
+   footprint-centroid distance > 0.25 × face width → skip; otherwise lower-weight
+   rerun. Record which action fired in the report.
+3. **|delta| seam metric (advisory)**: post-paste, compute |before − after| inside
+   the footprint; if the outer 8 px ring's mean delta exceeds 3× the interior's,
+   the seam is visible → feather the footprint ring and re-composite once.
+4. **Tests** (`tests/test_face_paste_guard.py`): synthetic 512-crop + affine with
+   a deliberately offset paste → guard fires and falls back; aligned paste →
+   guard silent; footprint mask matches the analytically-warped alpha; seam-ring
+   metric on a synthetic hard-edge paste → feather triggers.
+5. **Acceptance**: re-run speckle figure offline (PIXREVIVE_DEBUG=1) → the
+   before/after-GFPGAN |delta| rect no longer contains an eye landmark outside
+   it; contact-sheet crop at the eye shows no rectangle seam; full suite green;
+   Gate A still 0 FP.
+
+### Workstream W2 — anatomy-aware damage protection (ears & head halo)
+
+The ear/collar losses are mask-authoring errors: flake fields overlapping
+head-adjacent anatomy were inpainted wholesale. MaskRefiner's protection
+(`ai/damage/mask_refiner.py`, "protected N px of facial anatomy") currently
+guards only bbox-interior features. Steps:
+
+1. **Head-region halo**: build a protection mask from face landmarks + bbox:
+   ear discs (circles r≈0.22 × face width centered at bbox left/right edge at
+   eye height), hair band ring (bbox top − 0.35 × face height), and neck/collar
+   band (bbox bottom + 0.25 × face height, full bbox width). Subtract the halo
+   from the final damage mask; pixels leaving the mask get routed to the
+   speckle/floor reducers (Stage 4b / Stage 5) instead of LaMa.
+2. **Cap discipline**: keep the existing 8% face-ceiling logic for the bbox
+   interior; the halo is additional and must log `protected_px` per region so
+   the 34.9%/27.5% numbers become measurable before/after.
+3. **Regression fixture**: teared.jpg must keep ≥60% of the ear-region flake
+   pixels out of the LaMa mask (probe-measured; currently 34.9% masked), with
+   the flake field still cleaned downstream by NLM (HF metric on the output
+   crop must not regress vs V0.1 sheet).
+4. **Acceptance**: re-run teared offline → `03_after_inpaint` frame still shows
+   an ear silhouette (may be noisy); collar fold line partially survives;
+   B3/A3 verdicts unchanged or better; suite green.
+
+### Workstream W3 — V1a refill plumbing (the real rebuild path; already GO'd)
+
+Unchanged from the V1 addendum in [SEMANTIC_VALIDATION_PLAN.md](SEMANTIC_VALIDATION_PLAN.md):
+findings→masks (B3 skin patches, A3 hairline, plus W2's "halo-deferred" ear/collar
+zones), SFace identity delta-gate, SSIM revert. W1/W2 change *what reaches* V1a;
+V1a changes *what comes back*. Sequenced after W1+W2 so refill masks are authored
+against honest damage masks.
+
+### Order & gates
+
+W1 → W2 → W3. W1 and W2 are each ≤ a day and independently shippable;
+each carries its own tests + offline before/after evidence; no shared files
+(`face_restorer.py` vs `mask_refiner.py`) so no merge coupling. W3 starts when
+W1+W2 evidence is on the contact sheet.

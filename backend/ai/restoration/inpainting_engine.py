@@ -11,7 +11,6 @@ CRITICAL FIX:
 
 import cv2
 import numpy as np
-from typing import Optional
 
 from ai.pipeline.pipeline_context import PipelineContext
 

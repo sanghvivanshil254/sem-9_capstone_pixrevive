@@ -1,7 +1,6 @@
 import os
 import cv2
 import numpy as np
-import sys
 import torch
 import ai.compat  # noqa: F401 - compatibility shim for basicsr / facexlib
 

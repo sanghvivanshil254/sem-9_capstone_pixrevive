@@ -35,10 +35,3 @@ class BaseDetector(BaseModel):
         pass
 
 
-class BaseColorizer(BaseModel):
-    @abstractmethod
-    def colorize(self, context: PipelineContext) -> np.ndarray:
-        """Colorize the working_image in context."""
-        pass
-
-

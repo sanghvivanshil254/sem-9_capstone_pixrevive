@@ -5,6 +5,15 @@ All notable changes to PixRevive are documented here. Format follows
 
 ## [Unreleased]
 
+### Removed
+- **Compaction (2026-09-29)** — removed stale planning docs (`plan.md`,
+  `photo_restoration_pipeline.md`, `pixrevive_orchestrator_plan.md`, the Ralph PRD,
+  captured pytest/stream outputs, retired audit/inventory docs), the superseded
+  `start_dev.bat`/`restart_all.bat` launchers (superseded by `.claude/launch.json`),
+  one-off probe/diagnostic scripts, the Vite-template `App.css`/`hero.png`, and
+  `e2e/example.spec.js`. 44 MB of untracked `debug_output_*` run artifacts deleted and
+  the pipeline's debug snapshot dirs added to `.gitignore`.
+
 ### Added
 - **Phase V0.1 — grain-floor routing + skin-residual validation (beta).** Closes the two
   gaps the 4/10 (speckle Lena) and 6/10 (teared) live critiques identified. ① The

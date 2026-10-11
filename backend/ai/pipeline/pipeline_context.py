@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 import cv2
 import numpy as np
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 
 
 class PipelineContext:

@@ -6,20 +6,13 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 import cv2
 import numpy as np
-import torch
 
 from ai.pipeline.pipeline_context import PipelineContext
 from ai.pipeline.debug_logger import DebugLogger
-from ai.pipeline.stages._helpers import _refresh_sharpness
-from ai.analysis.quality_analyzer import QualityAnalyzer
-from ai.analysis.face_detector import FaceDetector
 from ai.damage.enhanced_detector import EnhancedDamageDetector
 from ai.damage.tearmark_detector import TearmarkDetector
 from ai.damage.mask_refiner import MaskRefiner
 from ai.restoration.inpainting_engine import InpaintingEngine
-from ai.restoration.super_resolution import SuperResolution
-from ai.colorization.color_refiner import ColorArtifactReducer
-from ai.postprocessing.enhancer import Harmonizer
 
 
 class DamageStagesMixin:
@@ -120,6 +113,26 @@ class DamageStagesMixin:
                 "denoise path will handle the grain."
             )
             context.image_metadata["grain_field_mask_discarded"] = True
+
+        # ── Dense dust-colony re-admission (2026-10-02 white-blob debug) ──
+        # The grain gate above discards the whole noise-derived field when the
+        # frame is noisy — correct against RC-1, but it is binary: object-level
+        # colonies of mid-size bright dust on a darker substrate (the teared
+        # portrait's head blob) were discarded with the grain and survived to
+        # the output (measured: 24.4% of the blob region bright in the final,
+        # 49% of it outside the inpaint mask entirely). detect_dust_colonies()
+        # re-admits only that class: dense bright-excess fields whose mean
+        # pops out against their surround (uniform grain and bright-on-bright
+        # content fail the popout test; case8 speckle-Lena stays inert).
+        # Runs after the grain gate so it can never re-admit what RC-1 removed.
+        try:
+            dust_colonies = self.enhanced_detector.detect_dust_colonies(
+                context.working_image, context
+            )
+            if np.any(dust_colonies):
+                combined = cv2.bitwise_or(combined, dust_colonies)
+        except Exception as exc:
+            context.add_log(f"Stage 2 DustColonies failed: {exc}")
 
         # ── Foxing / mold spots (T-1) ────────────────────────────────────
         # Only on frames the grain gate did not claim; black-hat on a noisy

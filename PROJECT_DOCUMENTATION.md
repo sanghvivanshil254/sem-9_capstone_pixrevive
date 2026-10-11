@@ -87,11 +87,10 @@ backend/
     colorization/             ddcolor_colorizer, color_refiner, vendored ddcolor/
     postprocessing/           denoiser, enhancer (Harmonizer), noise_router
     validation/               identity_validator, forensic_validator
-    orchestrator/             experimental action-loop (PIXREVIVE_USE_ORCHESTRATOR=1)
     weights/                  checkpoints (git-ignored)
 frontend/                     React 19 + Vite (components: ImageUploader, ProgressBar, Navbar, Footer)
 tests/                        pytest suite + restoration_dataset fixtures (case1–case12)
-scripts/                      check_progress_stream.py, diagnostics/
+scripts/                      check_progress_stream.py, benchmark_quality.py
 e2e/                          Playwright specs (run against CDP-attached Chrome)
 ```
 
@@ -438,8 +437,6 @@ npm run dev
 $env:PYTHONPATH='backend'
 & "C:\Users\sangh\AppData\Roaming\Python\Python312\Scripts\pytest.exe" tests/
 ```
-
-Baseline and Phase-1 logs: `docs/baseline_test_run.md`, `docs/baseline_pytest_output.txt`, `docs/phase1_pytest_output.txt`.
 
 E2E specs in `e2e/` run against an already-running Chrome attached via CDP on port 9222 (Playwright driver downloads are blocked in this environment — see `AGENTS.md`).
 

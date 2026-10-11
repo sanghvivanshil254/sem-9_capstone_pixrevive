@@ -13,6 +13,15 @@ Key architecture:
 import cv2
 import numpy as np
 from ai.pipeline.pipeline_context import PipelineContext
+from ai.damage.tearmark_detector import _tm_field_mode as _tm_field
+
+
+# Field-noise mode (debug session 2026-10-01, RC-1b): when TearmarkDetector ran
+# in field mode the mask is deliberately speck-granular; the k7 close + k5
+# dilate here re-fused it back into blankets (measured on the teared portrait:
+# 7.98% specks -> 16.7% blanket, head band 48.6% -> 77.2%) and LaMa region-
+# filled the blanket — the "puffed, stamped" hair. Field mode keeps the same
+# light k3 morphology the detector used.
 
 
 class MaskRefiner:
@@ -62,14 +71,19 @@ class MaskRefiner:
         else:
             fused = mask.copy()
 
-        # ── 2. Close intra-damage gaps (robust 7x7 kernel) ─────────────────────
+        # ── 2. Close intra-damage gaps (robust 7x7 kernel) ─────────────────
+        field_mode = _tm_field(context)
         k7 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        refined = cv2.morphologyEx(fused, cv2.MORPH_CLOSE, k7, iterations=1)
+        if field_mode:
+            k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            refined = cv2.morphologyEx(fused, cv2.MORPH_CLOSE, k3, iterations=1)
+        else:
+            refined = cv2.morphologyEx(fused, cv2.MORPH_CLOSE, k7, iterations=1)
 
-        # ── 3. Dilation for clean inpainting overlap context ──────────────────
+        # ── 3. Dilation for clean inpainting overlap context ───────────────
         # Ensure mask fully covers thin feathered tear margins and micro-cracks
         k5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        refined = cv2.dilate(refined, k5, iterations=1)
+        refined = cv2.dilate(refined, (k3 if field_mode else k5), iterations=1)
 
         # ── 4. Refine face regions ────────────────────────────────────────────
         # Protect critical facial features (eyes, nose tip, lips, teeth) from false-positive
@@ -258,6 +272,7 @@ class MaskRefiner:
 
         context.add_log(
             f"MaskRefiner: coverage={coverage*100:.1f}%, faces={len(faces)}, "
-            f"all damage routed to LaMa."
+            f"all damage routed to LaMa"
+            + (" (field-noise mode: speck-granular mask)." if field_mode else ".")
         )
         return refined

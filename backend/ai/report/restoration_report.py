@@ -29,7 +29,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-import cv2
 import numpy as np
 
 from ai.pipeline.pipeline_context import PipelineContext
@@ -118,11 +117,17 @@ def _build(context: PipelineContext) -> Dict[str, Any]:
     # context (keep the old color_type inference for them). The rollback
     # flag still vetoes. Measured 2026-09-27: colorize=false on sepia input
     # used to emit the disclaimer because color_type alone was trusted.
-    was_colorized = (
+    # N5 (re-audit 2026-09-30): a Q-3 rollback means colorization ran and
+    # failed — that is exactly the case the disclaimer exists for (the output
+    # stayed grayscale, but the model DID invent chroma and it was discarded).
+    # Legacy test contexts without colorization_applied keep the old
+    # color_type inference.
+    rolled_back = bool(meta.get("colorization_rolled_back", False))
+    was_colorized = rolled_back or (
         bool(meta.get("colorization_applied", False))
         or ("colorization_applied" not in meta
             and color_type in ("grayscale", "sepia"))
-    ) and not meta.get("colorization_rolled_back", False)
+    )
     gfpgan_applied = bool(meta.get("gfpgan_applied", False))
     gfpgan_deferred = bool(meta.get("gfpgan_deferred", False))
 
@@ -155,7 +160,7 @@ def _build(context: PipelineContext) -> Dict[str, Any]:
         reconstructed.append(
             f"facial regions largely reconstructed ({face_inpaint_pct:.1f}% of a face area)"
         )
-    if was_colorized:
+    if was_colorized and not rolled_back:
         reconstructed.append(
             "colors added by AI — plausible, not the original colors"
         )
@@ -171,6 +176,20 @@ def _build(context: PipelineContext) -> Dict[str, Any]:
         )
     warnings = meta.get("warnings") or []
     warnings = warnings or []
+    # Remediation-plan validator flags (report-only): quality-audit advisories
+    # computed in Stage 11 (eye asymmetry, contour loss, HF retention, chroma
+    # bleed) become plain-language disclosure lines.
+    _ov = meta.get("output_verification") or {}
+    _qa = _ov.get("quality_audit") or {} if isinstance(_ov, dict) else {}
+    _AUDIT_FLAG_LINES = {
+        "eye_asymmetry": "eyes differ in sharpness beyond threshold",
+        "contour_lost": "jawline/shoulder contours lost in restoration",
+        "hf_retention_low": "fine texture retention below threshold",
+        "chroma_bleed": "color bleeding across luminance edges detected",
+    }
+    for _f in (_qa.get("flags") or []):
+        if _f in _AUDIT_FLAG_LINES and _AUDIT_FLAG_LINES[_f] not in flags:
+            flags.append(_AUDIT_FLAG_LINES[_f])
     if "inpaint_face_structure_erased_reverted" in warnings:
         flags.append(
             "inpainting erased facial structure in a face region — that region "
@@ -180,6 +199,30 @@ def _build(context: PipelineContext) -> Dict[str, Any]:
         flags.append(
             "colorization produced an implausible wash and was rolled back — "
             "output stays grayscale"
+        )
+    elif meta.get("colorization_disclaimer") and not was_colorized:
+        # Stage 6 seeds the disclaimer flag directly on the rollback path;
+        # mirror it here so the flag never outlives its claim.
+        flags.append(
+            "colorization produced an implausible wash and was rolled back — "
+            "output stays grayscale"
+        )
+    # G3 (docs/REMEDIATION_PLAN_AB_G.md): a grayscale/sepia source has NO
+    # recoverable true colors — anything the colorizer produced is synthetic
+    # and must be disclosed as such, not as "plausible".
+    if was_colorized and not rolled_back and color_type in ("grayscale", "sepia"):
+        flags.append(
+            "source is monochrome (" + color_type + ") — all colors are "
+            "synthetic; the original colors are unrecoverable"
+        )
+    # RC-4 (debug session 2026-10-01): chroma synthesis skipped on a low-res
+    # noisy grayscale source — disclose that the monochrome look is a decision,
+    # not an omission.
+    if meta.get("colorize_skipped_lowres_gray"):
+        flags.append(
+            "source is a low-resolution noisy grayscale image — colorization "
+            "was skipped because every color would be invented (enable "
+            "colorize explicitly to override)"
         )
     if gfpgan_deferred:
         flags.append(

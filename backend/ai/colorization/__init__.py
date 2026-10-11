@@ -25,7 +25,6 @@ from .ddcolor_colorizer import DDColorColorizer
 from .color_refiner import (
     ColorArtifactReducer,
     BandingReducer,
-    SaturationBalancer,
     ColorSmoother,
     FacialSkinToneProtector,
     BackgroundNeutralizer,

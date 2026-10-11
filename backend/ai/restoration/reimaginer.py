@@ -142,13 +142,6 @@ class _ReimagineState:
         # (added_cond_kwargs=None, measured 2026-09-27). Track it explicitly.
         self.ip_loaded = False
 
-    def reset(self) -> None:
-        self.pipes = {}
-        self.tier = None
-        self.ip_loaded = False
-        self.faceid = None
-        self.conditioning_used = None
-
 
 _STATE = _ReimagineState()
 

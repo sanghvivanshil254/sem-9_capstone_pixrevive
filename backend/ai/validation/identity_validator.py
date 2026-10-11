@@ -87,16 +87,6 @@ class FacialLandmarks:
         return None
     
     @property
-    def nose_bridge_center(self) -> Optional[LandmarkPoint]:
-        """Center of nose bridge (average of points 27-30)."""
-        nose_points = self.points[27:31]
-        if not nose_points:
-            return None
-        x = float(np.mean([p.x for p in nose_points]))
-        y = float(np.mean([p.y for p in nose_points]))
-        return LandmarkPoint(x, y)
-    
-    @property
     def mouth_center(self) -> Optional[LandmarkPoint]:
         """Calculate center of mouth (average of outer mouth points 48-59)."""
         mouth_points = self.points[48:60]

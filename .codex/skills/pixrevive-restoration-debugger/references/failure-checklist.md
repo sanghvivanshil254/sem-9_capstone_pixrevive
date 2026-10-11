@@ -14,12 +14,12 @@
 - `04_final_mask.png`: check mask coverage. Any mask over eyes, lips, nose, or intact skin must be justified by visible damage.
 - `05_after_inpaint.png`: first place to catch hallucinated skin, rewritten facial features, or filled texture errors.
 - `09_after_face_restore.png`: check identity, eye shape, mouth, and nose before colorization.
-- `11_after_colorize.png`: check ECCV16 artifacts before SR.
+- `11_after_colorize.png`: check DDColor artifacts before SR.
 - `05_final_working.png`: final post-SR output; compare against earlier stages to isolate SR amplification.
 
 ## Common Root Causes
 
-- Green or pink sheets: chroma cleanup/refinement applied too broadly, LAB A/B channel mistakes, or ECCV16 AB scaling mismatch.
+- Green or pink sheets: chroma cleanup/refinement applied too broadly, LAB A/B channel mistakes, or DDColor chroma blending artifacts.
 - Sepia image turns gray too early: contamination removal neutralized chroma before colorization or before the user wanted it.
 - B&W image gets color artifacts while colorization is off: color cleanup/refinement ran on grayscale output.
 - Face changes identity: mask touched clean facial pixels, GFPGAN blend weight too high, or validation skipped landmarks.

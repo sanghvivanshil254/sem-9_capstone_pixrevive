@@ -236,11 +236,6 @@ class SFaceIdentityGate:
         out["reason"] = out["reason"] or "ok"
         return out
 
-    def compare_faces_multi(self, image_a: np.ndarray, image_b: np.ndarray,
-                            max_faces: int = 0) -> dict:
-        """Explicit all-faces comparison (alias; see compare(max_faces=))."""
-        return self.compare(image_a, image_b, max_faces=max_faces)
-
     # -- verdict -----------------------------------------------------------
 
     def check(

@@ -1,6 +1,6 @@
 ---
 name: pixrevive-restoration-debugger
-description: Debug PixRevive image restoration quality failures. Use when investigating noisy, degraded, sepia, grayscale, or damaged-photo outputs; tracing artifacts through masks, inpainting, GFPGAN face restoration, ECCV16 colorization, RealESRGAN upscaling, quality gates, frontend upload controls, or Python 3.12 environment issues.
+description: Debug PixRevive image restoration quality failures. Use when investigating noisy, degraded, sepia, grayscale, or damaged-photo outputs; tracing artifacts through masks, inpainting, GFPGAN face restoration, DDColor colorization, RealESRGAN upscaling, quality gates, frontend upload controls, or Python 3.12 environment issues.
 ---
 
 # PixRevive Restoration Debugger
@@ -33,7 +33,7 @@ Use this skill to debug PixRevive end to end without guessing. Work from recorde
 
 4. Localize the first bad stage:
    - If masks cover real facial structure, debug damage detection and mask refinement.
-   - If output becomes green/pink/purple, debug contamination removal, ECCV16, and color refinement.
+   - If output becomes green/pink/purple, debug contamination removal, DDColor chroma blending, and color refinement.
    - If details become waxy or identity changes, debug GFPGAN blending and identity validation.
    - If texture becomes honeycomb or smeared, debug halftone suppression and SR prefiltering.
 
