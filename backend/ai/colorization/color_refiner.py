@@ -14,9 +14,11 @@ Key improvements:
 - Edge-aware color blending
 """
 
+import os
+
 import cv2
 import numpy as np
-from typing import Optional, Tuple, List, Dict, Any
+from typing import Optional, List, Dict, Any
 from ai.pipeline.pipeline_context import PipelineContext
 
 
@@ -93,103 +95,10 @@ class BandingReducer:
         return cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
 
 
-class SaturationBalancer:
-    """
-    Balances and normalizes saturation to prevent unnatural colors.
-    """
-    
-    @staticmethod
-    def analyze_saturation(img: np.ndarray) -> dict:
-        """
-        Analyze saturation distribution across the image.
-        """
-        hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV).astype(np.float32)
-        saturation = hsv[:, :, 1]
-        
-        return {
-            'mean_sat': float(np.mean(saturation)),
-            'std_sat': float(np.std(saturation)),
-            'max_sat': float(np.max(saturation)),
-            'min_sat': float(np.min(saturation)),
-            'median_sat': float(np.median(saturation))
-        }
-    
-    @staticmethod
-    def balance_saturation(img: np.ndarray, 
-                           target_mean: float = 80.0,
-                           max_saturation: float = 200.0,
-                           preserve_highlights: bool = True) -> np.ndarray:
-        """
-        Balance saturation to achieve natural, film-like results.
-        
-        Args:
-            img: Input RGB image
-            target_mean: Target mean saturation value (0-255)
-            max_saturation: Maximum allowed saturation
-            preserve_highlights: Whether to preserve high saturation in highlights
-        """
-        hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV).astype(np.float32)
-        h = hsv[:, :, 0]
-        s = hsv[:, :, 1]
-        v = hsv[:, :, 2]
-        
-        current_mean = float(np.mean(s))
-        
-        # If saturation is too high, scale it down
-        if current_mean > target_mean:
-            scale_factor = target_mean / (current_mean + 1e-6)
-            s = s * scale_factor
-        
-        # Cap maximum saturation
-        s = np.clip(s, 0, max_saturation)
-        
-        # Preserve saturation in well-lit areas
-        if preserve_highlights:
-            # Identify highlight areas (high value)
-            highlight_mask = v > 200
-            # Allow higher saturation in highlights
-            s[highlight_mask] = np.clip(s[highlight_mask] * 1.2, 0, 255)
-        
-        hsv[:, :, 0] = h
-        hsv[:, :, 1] = np.clip(s, 0, 255)
-        hsv[:, :, 2] = v
-        
-        result = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
-        
-        return result
-
-
 class ColorSmoother:
     """
     Smooths color transitions and reduces pixelation artifacts.
     """
-    
-    @staticmethod
-    def detect_color_noise(img: np.ndarray, threshold: float = 0.1) -> np.ndarray:
-        """
-        Detect areas with color noise (isolated color pixels).
-        """
-        lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB).astype(np.float32)
-        
-        # Calculate color difference between each pixel and its neighbors
-        h, w = lab.shape[:2]
-        color_diff = np.zeros((h, w))
-        
-        for dy in [-1, 0, 1]:
-            for dx in [-1, 0, 1]:
-                if dy == 0 and dx == 0:
-                    continue
-                shifted = np.roll(lab, (dy, dx), axis=(0, 1))
-                diff = np.linalg.norm(lab - shifted, axis=2)
-                color_diff += diff
-        
-        # Normalize
-        color_diff = color_diff / 8.0  # 8 neighbors
-        
-        # Identify isolated color pixels
-        noise_mask = color_diff > threshold * 255
-        
-        return noise_mask
     
     @staticmethod
     def smooth_colors(img: np.ndarray, 
@@ -666,6 +575,26 @@ class ColorArtifactReducer:
         """
         result = img.copy()
 
+        # G3 (docs/REMEDIATION_PLAN_AB_G.md): luminance-guided chroma
+        # alignment — smooth a/b with L* as the guided-filter guide so hue
+        # changes can only occur where luminance changes (stops color bleeding
+        # across luminance edges; sharpens chin/neck and collar/shirt hue
+        # separation). PIXREVIVE_CHROMA_DISCIPLINE=0 reverts.
+        if os.environ.get("PIXREVIVE_CHROMA_DISCIPLINE", "1").strip().lower() not in ("0", "false", "no", "off"):
+            try:
+                lab_g = cv2.cvtColor(result, cv2.COLOR_RGB2LAB).astype(np.float32)
+                l_g = lab_g[:, :, 0].astype(np.uint8)
+                a_f = cv2.ximgproc.guidedFilter(
+                    guide=l_g, src=lab_g[:, :, 1].astype(np.float32), radius=8, eps=600.0)
+                b_f = cv2.ximgproc.guidedFilter(
+                    guide=l_g, src=lab_g[:, :, 2].astype(np.float32), radius=8, eps=600.0)
+                # Blend 60% of the guided (edge-aligned) chroma back.
+                lab_g[:, :, 1] = np.clip(0.4 * lab_g[:, :, 1] + 0.6 * a_f, 0, 255)
+                lab_g[:, :, 2] = np.clip(0.4 * lab_g[:, :, 2] + 0.6 * b_f, 0, 255)
+                result = cv2.cvtColor(lab_g.astype(np.uint8), cv2.COLOR_LAB2RGB)
+            except Exception:
+                pass  # ximgproc unavailable — the bleed fixer below still runs
+
         # Step 0: Edge-aware color bleed reduction (joint bilateral filter guided by L*)
         if enable_bleed_reduction:
             result = EdgeAwareColorBleedFixer.fix_bleeding(result, context=context, strength=0.75)
@@ -864,49 +793,3 @@ class ColorArtifactReducer:
             info["error"] = str(exc)
             return img, info
 
-
-class GradientPreservingSmoother:
-    """
-    Smooths images while preserving important gradients and edges.
-    """
-    
-    @staticmethod
-    def smooth_preserving_gradients(img: np.ndarray,
-                                    iterations: int = 2,
-                                    strength: float = 0.3) -> np.ndarray:
-        """
-        Apply smoothing that preserves strong gradients and edges.
-        """
-        result = img.copy()
-        
-        for _ in range(iterations):
-            # Apply selective smoothing based on gradient strength
-            lab = cv2.cvtColor(result, cv2.COLOR_RGB2LAB).astype(np.float32)
-            L = lab[:, :, 0]
-            
-            # Calculate gradient magnitude
-            L_f32 = L.astype(np.float32)
-            grad_x = cv2.Sobel(L_f32, cv2.CV_32F, 1, 0, ksize=3)
-            grad_y = cv2.Sobel(L_f32, cv2.CV_32F, 0, 1, ksize=3)
-            grad_mag = np.sqrt(grad_x ** 2 + grad_y ** 2)
-            
-            # Normalize gradient magnitude
-            grad_norm = grad_mag / (np.max(grad_mag) + 1e-6)
-            
-            # Create protection mask - protect areas with strong gradients
-            protect_mask = grad_norm > 0.1
-            
-            # Apply Gaussian blur to smooth areas
-            smoothed_L = cv2.GaussianBlur(L_f32, (5, 5), 0)
-            
-            # Blend based on gradient protection
-            L_result = np.where(
-                protect_mask,
-                L,  # Keep original in high-gradient areas
-                L * (1 - strength) + smoothed_L * strength  # Smooth in flat areas
-            )
-            
-            lab[:, :, 0] = L_result
-            result = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
-        
-        return result

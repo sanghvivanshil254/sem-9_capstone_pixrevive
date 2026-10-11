@@ -27,7 +27,8 @@ a verification failure must not destroy a finished restoration.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+import os
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -243,6 +244,186 @@ def _check_texture_plausibility(
     return {"ratio": round(ratio, 3), "oversmooth": bool(ratio < TEXTURE_RATIO_BAR)}
 
 
+def dissolve_face_drips(rgb: np.ndarray, faces_mask: np.ndarray) -> Tuple[np.ndarray, int]:
+    """Dissolve compact bright residue INSIDE face zones (RC-2, 2026-10-01).
+
+    The teared portrait's semantic audit found 163 bright residual patches on
+    the face — whitish "drips" GFPGAN's damage-aware reconstruction lifted but
+    never fully removed. The shipped cleanup excludes faces entirely because
+    GFPGAN owns that canvas; but compact BRIGHT OUTLIER specks (far above an
+    11px local mean, small, non-filament) are unambiguously residue, even on a
+    reconstructed face, and Telea at radius 2 on their exact pixels cannot
+    smear anatomy the way broad edits did.
+
+    Safety: eyes and mouths are additionally zeroed from the mask by the caller
+    (landmark circles), components are capped at 0.15% of the face area, and
+    the whole pass is capped at 1.0% of face area per image.
+    Returns (cleaned_rgb, pixels_dissolved).
+    """
+    residue = detect_residue(rgb)
+    cand = residue & (faces_mask > 0)
+    if not np.any(cand):
+        return rgb, 0
+    num, labels, stats, _ = cv2.connectedComponentsWithStats(cand.astype(np.uint8) * 255, connectivity=8)
+    face_area = max(1, int(np.count_nonzero(faces_mask)))
+    per_comp_cap = max(24, int(face_area * 0.0015))
+    total_cap = int(face_area * 0.01)
+    keep = np.zeros(rgb.shape[:2], dtype=np.uint8)
+    used = 0
+    for i in range(1, num):
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        if area > per_comp_cap or used + area > total_cap:
+            continue
+        keep[labels == i] = 255
+        used += area
+    if used < 8:
+        return rgb, 0
+    dilated = cv2.dilate(keep, np.ones((3, 3), np.uint8), iterations=1)
+    cleaned = cv2.inpaint(rgb, dilated, 2, cv2.INPAINT_TELEA)
+    return cleaned, used
+
+
+# Bright-fill survivor dissolve (2026-10-02 white-blob debug): flat bright
+# fields the inpaint left INSIDE the repair zone. Scale-relative geometry
+# (1341px reference: k_in=31, k_ring=93).
+BRIGHT_FILL_COVERAGE_CAP_PCT = 3.0   # above this, flag only (repair failed upstream)
+
+
+def dissolve_bright_fill_fields(
+    rgb: np.ndarray, faces_mask: np.ndarray, damage_mask: Optional[np.ndarray]
+) -> Tuple[np.ndarray, int, int]:
+    """Dissolve flat bright infill surviving INSIDE the repaired zone (RC-B).
+
+    The teared portrait's head blob had two halves (probe
+    .freebuff/probe_white_blob2.py): 49% dust the mask never covered, and 51%
+    INSIDE the mask — LaMa fill that inherited brightness from the dust
+    context around it (masked-subset bright px mean 204, p99 230). The first
+    half is a detection problem (fixed at source in Stage 2,
+    EnhancedDamageDetector.detect_dust_colonies); this function closes the
+    loop on the second: if the REPAIRED region itself still reads as a flat
+    bright field that pops out against its surround, the repair failed there
+    and a targeted Telea pass removes it.
+
+    Detection (validated on the real output, .freebuff/probe_fix2_v3.py):
+    candidate components form where blur(gray,k_in) > 185 inside a dilated
+    damage mask (so real bright content outside the repair zone — paper
+    margins, collars, highlights — can never be touched) and outside faces.
+    A component is dissolved only when it is compact, mid-size, mean >= 180,
+    flat inside (pooled Laplacian <= 0.85x its annulus) AND pops out against
+    its true annulus by >= 25 gray levels (the real blob's fill core measured
+    mean 216 vs annulus 138, popout 78, tex 0.54; every other structure in
+    the frame failed at least one gate). Components are budgeted
+    strongest-first under a frame-coverage cap.
+
+    Returns (cleaned_rgb, pixels_dissolved, components_dissolved).
+    """
+    import os
+
+    if os.environ.get("PIXREVIVE_BRIGHT_FILL", "1").strip().lower() in (
+        "0", "false", "no", "off"
+    ):
+        return rgb, 0, 0
+    if damage_mask is None or not np.any(damage_mask > 0):
+        return rgb, 0, 0  # no repair zone to verify
+
+    h, w = rgb.shape[:2]
+    side = min(h, w)
+    k_in = max(15, int(side * 0.023)) | 1
+    k_near = max(9, int(side * 0.007)) | 1
+    k_out = max(31, int(side * 0.047)) | 1
+    amin = max(120, int(h * w * 0.0004))
+    amax = int(h * w * 0.02)
+
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    zone = cv2.dilate(
+        (damage_mask > 0).astype(np.uint8),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_in, k_in)),
+        iterations=1,
+    ) * 255
+    zone[faces_mask > 0] = 0
+
+    bright = cv2.blur(gray, (k_in, k_in))
+    cand = ((bright > 185.0) & (zone > 0)).astype(np.uint8)
+    cand = cv2.morphologyEx(
+        cand, cv2.MORPH_OPEN, cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (5, 5)))
+    if not np.any(cand):
+        return rgb, 0, 0
+
+    energy = np.abs(cv2.Laplacian(gray, cv2.CV_32F))
+    pooled = cv2.blur(energy, (15, 15))
+    se_near = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_near, k_near))
+    se_out = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_out, k_out))
+
+    num, labels, stats, _ = cv2.connectedComponentsWithStats(cand, connectivity=8)
+    comps = []
+    for i in range(1, num):
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        if area < amin or area > amax:
+            continue
+        cw = int(stats[i, cv2.CC_STAT_WIDTH])
+        ch = int(stats[i, cv2.CC_STAT_HEIGHT])
+        if max(cw, ch) / max(1, min(cw, ch)) >= 3.0:
+            continue
+        m = labels == i
+        # True annulus: outside a near ring, inside the far ring — excludes
+        # the component itself so a large patch's own brightness cannot
+        # cancel its popout (the v2 blur-of-blur failure).
+        near = cv2.dilate(m.astype(np.uint8), se_near, iterations=1)
+        out = cv2.dilate(m.astype(np.uint8), se_out, iterations=1)
+        ann = (out > 0) & (near == 0)
+        if int(ann.sum()) < 50:
+            continue
+        mean_in = float(gray[m].mean())
+        if mean_in < 180.0:
+            continue  # bright is part of the signature; gray fills stay
+        popout = mean_in - float(gray[ann].mean())
+        if popout < 25.0:
+            continue
+        tex = float(pooled[m].mean()) / (float(pooled[ann].mean()) + 1e-6)
+        if tex > 0.85:
+            continue  # interior as textured as its surround: real content
+        comps.append((popout, m, area))
+    if not comps:
+        return rgb, 0, 0
+
+    comps.sort(reverse=True, key=lambda t: t[0])
+    total_cap = int(h * w * BRIGHT_FILL_COVERAGE_CAP_PCT / 100.0)
+    keep = np.zeros((h, w), dtype=np.uint8)
+    used = 0
+    n_comp = 0
+    for _pop, m, area in comps:
+        if used + area > total_cap:
+            continue
+        keep[m] = 255
+        used += area
+        n_comp += 1
+    if used < amin:
+        return rgb, 0, 0
+
+    # Dissolve the FULL bright extent connected to each accepted core: the
+    # blur that formed the candidates softened the patch edge, so a rim-only
+    # mask makes Telea source from the artifact's own penumbra and the fill
+    # saturates bright (measured: rim-only capped the patch at ~183 over a
+    # 138 surround). k_ext bounds the reach; connectivity to the core keeps
+    # it on-patch. Where the surround is clean (fill sat on dark hair), the
+    # drop is near-total; where the surround is itself surviving dust, this
+    # pass only dims the artifact — the source fix (Stage 2 dust colonies)
+    # is what removes the class.
+    k_ext = max(31, int(side * 0.047)) | 1
+    grown = cv2.dilate(keep, cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (k_ext, k_ext)), iterations=1)
+    bright_ext = ((bright > 165.0) & (zone > 0) & (grown > 0)).astype(np.uint8)
+    num_e, lbl_e, _, _ = cv2.connectedComponentsWithStats(
+        bright_ext, connectivity=8)
+    seeds = np.unique(lbl_e[(keep > 0) & (lbl_e > 0)])
+    ext = (np.isin(lbl_e, seeds).astype(np.uint8) * 255
+           if seeds.size else keep)
+    dilated = cv2.dilate(ext, np.ones((9, 9), np.uint8), iterations=1)
+    cleaned = cv2.inpaint(rgb, dilated, max(5, side // 200), cv2.INPAINT_TELEA)
+    return cleaned, int(np.count_nonzero(ext)), n_comp
+
+
 def verify_and_clean(context) -> Dict[str, Any]:
     """Run all checks on the final image; micro-clean residue outside faces.
 
@@ -285,6 +466,77 @@ def verify_and_clean(context) -> Dict[str, Any]:
             f"cap ({RESIDUE_CLEANUP_CAP_PCT:.1f}%) — flagged, not re-repaired."
         )
 
+    # ── In-face drip dissolve (RC-2, PIXREVIVE_FACE_DRIP=0 reverts) ───────
+    if os.environ.get("PIXREVIVE_FACE_DRIP", "1").strip().lower() not in ("0", "false", "no", "off"):
+        try:
+            if np.any(in_face):
+                # Zero out eyes/mouth from the dissolve mask (landmarks when
+                # available, anthropometric fallback otherwise) — enamel,
+                # sclera and specular glints read as "bright residue" but are
+                # anatomy.
+                safe = faces.copy()
+                for f in (context.image_metadata.get("faces") or []):
+                    bbox = f.get("bbox") if isinstance(f, dict) else None
+                    if not bbox or len(bbox) < 4:
+                        continue
+                    x0, y0, x1, y1 = (int(v) for v in bbox[:4])
+                    fw, fh = max(1, x1 - x0), max(1, y1 - y0)
+                    lms = f.get("landmarks")
+                    if lms and len(lms) >= 5:
+                        for idx_eye in (0, 1):
+                            ex, ey = int(round(lms[idx_eye][0])), int(round(lms[idx_eye][1]))
+                            r = max(8, int(min(fw, fh) * 0.09))
+                            cv2.circle(safe, (ex, ey), r, 0, -1)
+                        ml = np.array(lms[3], dtype=np.float32)
+                        mr = np.array(lms[4], dtype=np.float32)
+                        mc = (ml + mr) / 2.0
+                        mw = float(np.linalg.norm(mr - ml))
+                        ang = float(np.degrees(np.arctan2(mr[1] - ml[1], mr[0] - ml[0])))
+                        cv2.ellipse(safe, (int(round(mc[0])), int(round(mc[1]))),
+                                    (int(max(10, mw * 0.60)), int(max(6, mw * 0.30))),
+                                    ang, 0, 360, 0, -1)
+                    else:
+                        for fx in (0.32, 0.68):
+                            ex, ey = int(x0 + fx * fw), int(y0 + 0.38 * fh)
+                            r = max(8, int(min(fw, fh) * 0.09))
+                            cv2.circle(safe, (ex, ey), r, 0, -1)
+                        cv2.ellipse(safe, (int(x0 + 0.50 * fw), int(y0 + 0.76 * fh)),
+                                    (int(max(10, fw * 0.24)), int(max(6, fh * 0.11))),
+                                    0, 0, 360, 0, -1)
+                cleaned, n_px = dissolve_face_drips(rgb, safe)
+                if n_px > 0:
+                    context.working_image = cleaned
+                    rgb = cleaned
+                    result["face_drips_dissolved_px"] = n_px
+                    result["cleaned"] = True
+                    after = detect_residue(rgb)
+                    result["residue_pct_after"] = round(_pct(after), 3)
+                    context.add_log(
+                        f"Stage 11 OutputVerify: dissolved {n_px} in-face residue px "
+                        f"(drip cleanup, eyes/mouth protected)."
+                    )
+        except Exception as exc:  # never let cleanup destroy a finished restore
+            context.add_log(f"Stage 11 OutputVerify: face drip cleanup skipped: {exc}")
+
+    # ── Bright-fill survivor dissolve (RC-B, PIXREVIVE_BRIGHT_FILL=0 reverts) ─
+    try:
+        cleaned, n_px, n_comp = dissolve_bright_fill_fields(
+            rgb, faces, (context.damage_masks or {}).get("final"))
+        if n_px > 0:
+            context.working_image = cleaned
+            rgb = cleaned
+            result["bright_fill_dissolved_px"] = n_px
+            result["bright_fill_dissolved_components"] = n_comp
+            result["cleaned"] = True
+            after = detect_residue(rgb)
+            result["residue_pct_after"] = round(_pct(after), 3)
+            context.add_log(
+                f"Stage 11 OutputVerify: dissolved {n_px} px of flat bright "
+                f"infill surviving inside the repair zone ({n_comp} field(s))."
+            )
+    except Exception as exc:  # never let cleanup destroy a finished restore
+        context.add_log(f"Stage 11 OutputVerify: bright-fill cleanup skipped: {exc}")
+
     color = _check_color_coherence(rgb)
     result["color_edge_delta_ab"] = color["delta_ab"]
     result["color_edge_incoherent"] = color["incoherent"]
@@ -305,6 +557,20 @@ def verify_and_clean(context) -> Dict[str, Any]:
     texture = _check_texture_plausibility(rgb, final_mask, faces)
     result["texture_ratio"] = texture.get("ratio")
     result["texture_oversmooth"] = texture.get("oversmooth", False)
+
+    # Remediation-plan validator additions (docs/REMEDIATION_PLAN_AB_G.md):
+    # report-only quality audit — eye symmetry, HF retention, residual specks,
+    # chroma bleed, seam steps, contour retention. Never alters pixels.
+    try:
+        from ai.validation.quality_audit import run_quality_audit
+        result["quality_audit"] = run_quality_audit(
+            context.original_image if getattr(context, "original_image", None) is not None else None,
+            rgb,
+            context.image_metadata.get("faces") or [],
+            final_mask,
+        )
+    except Exception as _qa_exc:
+        result["quality_audit"] = {"ran": False, "error": str(_qa_exc)}
 
     return result
 
@@ -327,6 +593,11 @@ def verification_flags(record: Dict[str, Any]) -> List[str]:
     if record.get("in_face_residue_pct", 0) >= IN_FACE_RESIDUE_FLAG_PCT:
         flags.append(
             f"specks remain inside face regions ({record.get('in_face_residue_pct'):.1f}%)"
+        )
+    if record.get("bright_fill_dissolved_px"):
+        flags.append(
+            f"post-verification dissolved {record.get('bright_fill_dissolved_px')} px of "
+            f"flat bright infill the repair left inside the damage zone"
         )
     if record.get("color_edge_incoherent"):
         flags.append(

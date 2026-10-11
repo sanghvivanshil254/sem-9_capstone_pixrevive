@@ -34,7 +34,8 @@ closing merges into frame-filling blobs.
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional, Tuple, Any
+import os
+from typing import Dict, List, Optional
 
 import cv2
 import numpy as np
@@ -151,6 +152,45 @@ class EnhancedDamageDetector:
         k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         flake_uint8 = cv2.dilate(flake_uint8, k, iterations=1)
 
+        # J-8 (2026-10-11 forensic pass): multi-scale top-hat pass for
+        # LARGE emulsion-loss patches. The local-contrast gate above uses one
+        # Gaussian scale (~2.5% of min-side), which misses blobs larger than
+        # that window (they read as local background, not local anomaly).
+        # Top-hat at 3 scales (3px = single speck; 11px = flake; 31px = patch)
+        # catches cream patches of the measured class [740,650,860,770].
+        # PIXREVIVE_MS_FLAKES=0 reverts.
+        if (os.environ.get("PIXREVIVE_MS_FLAKES", "1").strip().lower()
+                not in ("0", "false", "no", "off")):
+            try:
+                L_u8 = np.clip(L, 0, 255).astype(np.uint8)
+                ms_blob = np.zeros_like(flake_uint8)
+                for ksz in (3, 11, 31):
+                    se = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksz, ksz))
+                    tophat = cv2.morphologyEx(L_u8, cv2.MORPH_TOPHAT, se)
+                    ms_cand = (tophat > 22) & (V > 185) & (S < sat_threshold)
+                    ms_blob |= ms_cand.astype(np.uint8)
+                # Only regions NOT already in flake_uint8 contribute;
+                # keep areas in the flake blob band (>= 60 px, <= 2% frame).
+                ms_lbl, ms_lab, ms_stats, _ = cv2.connectedComponentsWithStats((ms_blob * 255), 8)
+                # Rebuild ms_blob keeping only components in the flake band.
+                ms_blob = np.zeros_like(ms_blob)
+                for i in range(1, ms_lbl):
+                    area = int(ms_stats[i, cv2.CC_STAT_AREA])
+                    if area < 60 or area > h * w * 0.02:
+                        continue
+                    ms_blob[ms_lab == i] = 255
+                # Fuse: add ms_blob to flake_uint8 only where the primary
+                # mask is 0 (top-hat finds what local-contrast did not).
+                add_where = (ms_blob > 0) & (flake_uint8 == 0)
+                flake_uint8[add_where] = 255
+                if int(add_where.sum()) > 0:
+                    context.add_log(
+                        f"[J-8] WhiteFlakes: multi-scale top-hat added "
+                        f"{int(add_where.sum())} px of large-blob coverage."
+                    )
+            except Exception as _ms_exc:
+                pass  # Multi-scale is best-effort; primary gate unchanged.
+
         # Zero out ocular and oral zones: teeth and sclera are natural human features, not emulsion flakes
         faces = context.image_metadata.get("faces", [])
         for f in faces:
@@ -178,6 +218,148 @@ class EnhancedDamageDetector:
                 cv2.ellipse(flake_uint8, (mx, my), axes, 0, 0, 360, 0, -1)
 
         return flake_uint8
+
+    def detect_dust_colonies(self, img: np.ndarray, context: PipelineContext) -> np.ndarray:
+        """Detect dense colonies of mid-size bright dust sitting on a DARKER
+        substrate (hair, dark garment, shadow) — debug session 2026-10-02.
+
+        The teared-sepia portrait's white head blob exposed a repair-class
+        gap. Measured on the 447px input (blob region x185-263, y11-78):
+
+          * Stage 0 BlobInpaint caps blobs at ~0.06% of frame area (~120px
+            @447²); a dust COLONY is thousands of px, so it passes through
+            by design.
+          * Stage 2's grain-field gate correctly discards noise-derived
+            masks (RC-1), but the gate is binary: object-level dust clusters
+            riding the grain are discarded with it.
+          * TearmarkDetector field mode deliberately keeps only the speck
+            amplitude tail (7.28%), so ~40% of the blob region was never
+            masked; LaMa's fill also inherited brightness from the surviving
+            dust context (fill p99=230).
+          * Stage 11's residue detector measures against an 11px local mean
+            and caps at 2.5% of frame — structurally blind to a dense bright
+            field whose local mean is itself bright.
+
+        Result: 11,486 bright pixels (24.4% of the blob region) survived to
+        the output as a white blob on the head — 49% of them OUTSIDE the
+        inpaint mask entirely.
+
+        Class signature used here (validated on the real input, probe
+        .freebuff/probe_dust_tune5.py): many mid-size bright outliers
+        DENSELY packed, whose mean gray exceeds the surrounding ring by a
+        large margin (measured popout: head colony 50.8 vs <= 32.8 for every
+        other structure in the frame). The popout test is the discriminator:
+        uniform grain fields (case8 speckle-Lena, ring equally bright) and
+        bright-on-bright content (collar, paper) cannot pass it, which kept
+        case8 at 0.4% coverage (inert) while the head colony hit 61%.
+
+        A second axis — granularity — separates colonies from smooth
+        photographic highlights that ALSO pop out (Lena's feather/shoulder
+        highlights measure popout 48-49 vs the colony's 50.8): a colony is
+        MANY discrete bright grains, a highlight is one smooth blob. Counting
+        seed islands inside each candidate component (probe
+        .freebuff/probe_island_gate.py): real colony components carry 51/7/23
+        seed islands, Lena highlights 3/4, case8 speckle comps 2/2. A
+        component must therefore contain at least 5 discrete seed islands.
+
+        Env: PIXREVIVE_DUST_COLONIES=0 reverts.
+        """
+        import os
+
+        if os.environ.get("PIXREVIVE_DUST_COLONIES", "1").strip().lower() in (
+            "0", "false", "no", "off"
+        ):
+            return np.zeros(img.shape[:2], dtype=np.uint8)
+
+        h, w = img.shape[:2]
+        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY).astype(np.float32)
+
+        # Scale-relative geometry (447px reference: k_exc=25, k_dens=21,
+        # ring=31, min component 80px).
+        side = min(h, w)
+        k_exc = max(19, int(side * 0.056)) | 1
+        k_dens = max(15, int(side * 0.047)) | 1
+        ring_w = max(21, int(side * 0.070)) | 1
+        amin = max(40, int(h * w * 0.0004))
+        amax = int(h * w * 0.06)
+        budget = 0.08 * h * w
+
+        # 1. Bright-excess seeds vs local background. No frame-level gate
+        #    here: a clean portrait with ONE dusty region must still be
+        #    caught, so the per-component gates below decide, not a global
+        #    density figure.
+        bg = cv2.GaussianBlur(gray, (k_exc, k_exc), 0)
+        seed = ((gray - bg) > 20.0).astype(np.float32)
+        # Label the seed grains once; components must contain MANY of them
+        # (granularity gate below).
+        _n_isl, lbl_isl = cv2.connectedComponents(
+            (seed > 0).astype(np.uint8), connectivity=8)
+
+        # 2. Density fusion: the colony is the field, not the single speck.
+        dens = cv2.blur(seed, (k_dens, k_dens))
+        field = (dens > 0.35).astype(np.uint8)
+        field = cv2.morphologyEx(
+            field, cv2.MORPH_CLOSE, cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (7, 7)))
+
+        # 3. Per-component gates: compact, mid-size, and DARKER-substrate
+        #    popout (colony mean vs surrounding ring).
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ring_w, ring_w))
+        ring = cv2.dilate(field, kernel) > 0
+        num, labels, stats, _ = cv2.connectedComponentsWithStats(
+            field, connectivity=8)
+        comps = []
+        for i in range(1, num):
+            area = int(stats[i, cv2.CC_STAT_AREA])
+            if area < amin or area > amax:
+                continue
+            cw = int(stats[i, cv2.CC_STAT_WIDTH])
+            ch = int(stats[i, cv2.CC_STAT_HEIGHT])
+            if max(cw, ch) / max(1, min(cw, ch)) >= 3.0:
+                continue  # elongated structure (scratch, border strip)
+            m = labels == i
+            r = ring & ~m
+            if int(r.sum()) < 50:
+                continue
+            popout = float(gray[m].mean() - gray[r].mean())
+            if popout < 25.0:
+                continue  # uniform grain field / bright-on-bright content
+            islands = int(np.unique(lbl_isl[m & (lbl_isl > 0)]).size)
+            if islands < 5:
+                continue  # one smooth blob (highlight), not a grain colony
+            comps.append((popout, m, area))
+        if not comps:
+            return np.zeros((h, w), dtype=np.uint8)
+
+        # 4. Frame budget, strongest popout first (a colony that failed these
+        #    gates is content or texture, not dust).
+        comps.sort(reverse=True, key=lambda t: t[0])
+        keep = np.zeros((h, w), dtype=np.uint8)
+        used = 0
+        for _popout, m, area in comps:
+            if used + area > budget:
+                continue
+            keep[m] = 255
+            used += area
+        if not used:
+            return keep
+
+        # Grow past the dust penumbra: LaMa's fill context must be true
+        # substrate, not the bright blur around the dust (measured on the
+        # teared input: +9px @447 takes bright-dust capture from 68% to
+        # 99.7% for a 7.7%-of-frame mask).
+        k_grow = max(3, int(side * 0.02)) | 1
+        keep = cv2.dilate(
+            keep, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_grow, k_grow)),
+            iterations=1)
+
+        coverage_pct = 100.0 * float(np.count_nonzero(keep)) / float(h * w)
+        context.add_log(
+            f"DustColonies: {len(comps)} dense bright-dust colony(ies) "
+            f"masked ({coverage_pct:.2f}% of frame, popout>=25)."
+        )
+        context.damage_masks["dust_colonies"] = keep
+        return keep
 
     def detect_wide_cracks(self, img: np.ndarray, context: PipelineContext) -> np.ndarray:
         """Detect wide cracks and structural tears with resolution-aware scaling."""
@@ -650,10 +832,6 @@ class EnhancedDamageDetector:
 
         return spot_mask
 
-    def detect_dust_spots(self, img: np.ndarray, context: PipelineContext) -> np.ndarray:
-        """Alias for detect_dark_spots for API compatibility."""
-        return self.detect_dark_spots(img, context)
-
     def detect_edge_damage(self, img: np.ndarray, context: PipelineContext) -> np.ndarray:
         """Detect genuine physical damage near photo borders."""
         h, w = img.shape[:2]
@@ -694,10 +872,6 @@ class EnhancedDamageDetector:
                 edge_damage[labels == i] = 0
 
         return edge_damage
-
-    def combined_damage_mask(self, img: np.ndarray, context: PipelineContext) -> np.ndarray:
-        """Alias for detect() that computes the full multi-category damage mask."""
-        return self.detect(context)
 
     def detect(self, context: PipelineContext) -> np.ndarray:
         """Main detection method — combines all damage types."""

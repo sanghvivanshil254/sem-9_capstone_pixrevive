@@ -34,10 +34,48 @@ silent-failure sources:
     Pass 3 therefore uses the relative term alone.
 """
 
+import os
+
 import cv2
 import numpy as np
 from ai.models.base_model import BaseDetector
 from ai.pipeline.pipeline_context import PipelineContext
+
+
+# ── Field-noise mode (debug session 2026-10-01, RC-1) ──────────────────────────
+# On a mottled sepia scan the Stage-2 grain gate may already have declared the
+# noise-derived masks grain ("mask is grain, not damage") — and then this
+# detector re-admitted the same field as "emulsion flakes": measured 24.19%
+# flagged (pass2 XL-contrast 6.3% + pass3 p90 top-hat 9.8%), which the k5×2
+# CLOSE below fused into a head-shaped blanket (raw specks 7.98% → 20.6% in
+# the head band) and LaMa re-synthesized wholesale — the "puffed, stamped"
+# hair and watercolor background on the teared portrait.
+#
+# Field mode engages only on frames the grain gate claimed (or whose content
+# sigma is high with genuinely flaky color_type), and changes three things:
+#   1. pass2 (coarse XL-contrast) is dropped — it admits the mottle field.
+#   2. pass3 anchors at p93/40 instead of p90/32 (real flakes live at the
+#      amplitude tail: p95 tophat = 119 on the mottle field vs p50–p75 =
+#      24–45).
+#   3. Morphology uses a single k3 close — k5×2 fuses adjacent specks into
+#      blankets; speck granularity is what keeps LaMa from region-filling.
+# PIXREVIVE_TM_FIELD=0 reverts to the shipped behaviour.
+def _tm_field_enabled() -> bool:
+    return os.environ.get("PIXREVIVE_TM_FIELD", "1").strip().lower() not in (
+        "0", "false", "no", "off"
+    )
+
+
+def _tm_field_mode(context: PipelineContext) -> bool:
+    if not _tm_field_enabled():
+        return False
+    color_type = context.image_metadata.get("color_type", "color")
+    if color_type not in ("sepia", "color"):
+        return False
+    if context.image_metadata.get("grain_field_mask_discarded", False):
+        return True
+    sigma = float(context.image_metadata.get("content_sigma", 0.0) or 0.0)
+    return sigma > 6.0
 
 
 class TearmarkDetector(BaseDetector):
@@ -56,6 +94,7 @@ class TearmarkDetector(BaseDetector):
         img_np     = context.working_image
         h, w       = img_np.shape[:2]
         color_type = context.image_metadata.get("color_type", "color")
+        field_mode = _tm_field_mode(context)
 
         # ── Grayscale guard ───────────────────────────────────────────────────
         # Tearmarks are white emulsion flakes on sepia/colour photos.
@@ -180,22 +219,34 @@ class TearmarkDetector(BaseDetector):
         se_flake = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ks_flake, ks_flake))
         tophat = L - cv2.morphologyEx(L, cv2.MORPH_OPEN, se_flake)
         th_std = float(np.std(tophat))
-        if th_std > 8.0:
+        if field_mode:
+            flake_thresh = max(float(np.percentile(tophat, 93)), 40.0)
+        elif th_std > 8.0:
             # Damaged print: catch clear discrete flakes without masking natural hair strands
             flake_thresh = max(float(np.percentile(tophat, 90)), 32.0)
         else:
             flake_thresh = max(float(np.percentile(tophat, 93)), 40.0)
         pass3 = (tophat > flake_thresh) & sat_rel
 
-        combined = (pass1 | pass2 | pass3).astype(np.uint8) * 255
+        if field_mode:
+            combined = (pass1 | pass3).astype(np.uint8) * 255
+        else:
+            combined = (pass1 | pass2 | pass3).astype(np.uint8) * 255
 
         # ── Morphological cleanup ─────────────────────────────────────────────
         k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         k5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         k7 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
 
-        mask = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, k5, iterations=2)
-        mask = cv2.morphologyEx(mask,     cv2.MORPH_OPEN,  k3, iterations=1)
+        if field_mode:
+            # Speck-granular morphology: one k3 close (bridges 1px gaps only).
+            # k5×2 fuses neighbouring specks into blankets and LaMa then
+            # region-fills the whole blanket — the measured "puffed hair".
+            mask = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, k3, iterations=1)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k3, iterations=1)
+        else:
+            mask = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, k5, iterations=2)
+            mask = cv2.morphologyEx(mask,     cv2.MORPH_OPEN,  k3, iterations=1)
 
         # ── Component area filter ─────────────────────────────────────────────
         # The upper bound is solidity-aware, matching MaskRefiner's inpainting-
@@ -227,7 +278,31 @@ class TearmarkDetector(BaseDetector):
 
         # ── Safety valve ──────────────────────────────────────────────────────
         ratio = float(np.sum(mask > 0) / mask.size)
-        if ratio > 0.45:
+        if field_mode and ratio > 0.12:
+            # Strongest-first component cap for field-noise frames: keep the
+            # 12% of frame area with the highest mean top-hat amplitude (real
+            # flakes are the amplitude tail; the mottle field is the bulk).
+            num_c, lbl_c, stats_c, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+            comps = []
+            for i in range(1, num_c):
+                m = lbl_c == i
+                comps.append((float(tophat[m].mean()) if m.any() else 0.0, i, int(stats_c[i, cv2.CC_STAT_AREA])))
+            comps.sort(reverse=True)
+            keep = np.zeros_like(mask)
+            budget = 0.12 * mask.size
+            used = 0
+            for _amp, i, area in comps:
+                if used + area > budget:
+                    continue
+                used += area
+                keep[lbl_c == i] = 255
+            context.add_log(
+                f"TearmarkDetector: field-noise mode — capped {ratio*100:.1f}% -> "
+                f"{used/mask.size*100:.1f}% strongest-first (p93 top-hat, no pass2)."
+            )
+            mask = keep
+            ratio = used / mask.size
+        if not field_mode and ratio > 0.45:
             context.add_log(
                 f"TearmarkDetector: {ratio*100:.1f}% flagged (>45%) - tightening."
             )

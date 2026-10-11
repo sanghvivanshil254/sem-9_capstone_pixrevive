@@ -5,24 +5,15 @@ RestorationPipeline; see stage_registry.py for the stage contract)."""
 from typing import Any, Callable, Dict, List, Optional
 
 import logging
+import os
 
 import cv2
 import numpy as np
-import torch
 
 from ai.pipeline.pipeline_context import PipelineContext
 from ai.pipeline.debug_logger import DebugLogger
-from ai.pipeline.stages._helpers import _refresh_sharpness
 from ai.analysis.quality_analyzer import QualityAnalyzer
 from ai.analysis.face_detector import FaceDetector
-from ai.damage.enhanced_detector import EnhancedDamageDetector
-from ai.damage.tearmark_detector import TearmarkDetector
-from ai.damage.mask_refiner import MaskRefiner
-from ai.restoration.inpainting_engine import InpaintingEngine
-from ai.restoration.super_resolution import SuperResolution
-from ai.colorization.color_refiner import ColorArtifactReducer
-from ai.postprocessing.enhancer import Harmonizer
-from ai.preprocessing.halftone_suppressor import HalftoneSuppressor
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +93,14 @@ class PreprocessStagesMixin:
             logger.warning("Stage 0 SpeckSuppressor failed: %s", exc)
             context.add_log(f"Stage 0 SpeckSuppressor failed: {exc}")
 
+        try:
+            from ai.preprocessing.impulse_denoiser import ImpulseDenoiser
+            if ImpulseDenoiser.suppress_isolated_blobs(context):
+                acted.append("dust blobs")
+        except Exception as exc:
+            logger.warning("Stage 0 BlobInpaint failed: %s", exc)
+            context.add_log(f"Stage 0 BlobInpaint failed: {exc}")
+
         context.end_timer("stage_0_despeckle")
         if acted:
             # Evidence flag for the Restoration Report (T-2).
@@ -139,6 +138,22 @@ class PreprocessStagesMixin:
             img = context.working_image
             gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY).astype(np.float32)
             h_img, w_img = gray.shape
+
+            # G2 (docs/REMEDIATION_PLAN_AB_G.md): structure protection — the
+            # h=10 NLM below is a contour-eater; collar edges, jaw shadow and
+            # shoulder lines are exactly the low-contrast structure it erases
+            # (measured: teared.jpg collar line lost, contour_retention 0.32).
+            # PIXREVIVE_STRUCTURE_GUARD=0 reverts.
+            _struct_guard = os.environ.get("PIXREVIVE_STRUCTURE_GUARD", "1").strip().lower() not in ("0", "false", "no", "off")
+            pre_2b = context.working_image.copy()
+            structure_gate = None
+            if _struct_guard:
+                # Coherence-based gate (ai.analysis.structure): oriented lines
+                # only. A plain Sobel-magnitude gate protected the 2D damage
+                # clusters this stage exists to smooth (measured regression:
+                # the far-twin control stopped being smoothed).
+                from ai.analysis.structure import structure_gate as _sgate
+                structure_gate = _sgate(gray)
 
             # Measure local variance using 15x15 sliding window
             mean = cv2.GaussianBlur(gray, (15, 15), 0)
@@ -202,9 +217,41 @@ class PreprocessStagesMixin:
             l_heavy = cv2.fastNlMeansDenoising(l_chan, None, h=10.0, templateWindowSize=7, searchWindowSize=23)
 
             l_final = (l_heavy.astype(np.float32) * damage_zone + l_chan.astype(np.float32) * (1.0 - damage_zone))
+            # G2: keep original (edge-bearing) luminance along structure.
+            if structure_gate is not None:
+                l_final = l_final * (1.0 - 0.8 * structure_gate) + l_chan.astype(np.float32) * (0.8 * structure_gate)
             lab_fixed = cv2.merge([np.clip(l_final, 0, 255).astype(np.uint8), a_chan, b_chan])
             context.working_image = cv2.cvtColor(lab_fixed, cv2.COLOR_LAB2RGB)
-            context.add_log("Stage 2b DamageClusterSmooth: High-variance damage smoothed (variance>35.0, h=10.0).")
+            if structure_gate is not None:
+                context.add_log(
+                    "Stage 2b DamageClusterSmooth: High-variance damage smoothed "
+                    "(variance>35.0, h=10.0; structure edges protected)."
+                )
+            else:
+                context.add_log("Stage 2b DamageClusterSmooth: High-variance damage smoothed (variance>35.0, h=10.0).")
+
+            # G2: contour-retention guard — Sobel energy along structure edges
+            # after the stage vs before. Below 0.6 the smoother ate contours:
+            # blend the pre-stage edge detail back along the structure gate.
+            if structure_gate is not None:
+                g_after = cv2.cvtColor(context.working_image, cv2.COLOR_RGB2GRAY).astype(np.float32)
+                e_pre = np.sqrt(cv2.Sobel(gray, cv2.CV_32F, 1, 0, 3) ** 2 + cv2.Sobel(gray, cv2.CV_32F, 0, 1, 3) ** 2)
+                e_post = np.sqrt(cv2.Sobel(g_after, cv2.CV_32F, 1, 0, 3) ** 2 + cv2.Sobel(g_after, cv2.CV_32F, 0, 1, 3) ** 2)
+                struct_hi = structure_gate > 0.35
+                if struct_hi.any():
+                    ratio = float(np.mean(e_post[struct_hi])) / max(float(np.mean(e_pre[struct_hi])), 1e-6)
+                    context.image_metadata["contour_retention_2b"] = round(ratio, 3)
+                    if ratio < 0.6:
+                        w_back = float(np.clip((0.6 - ratio) / 0.4, 0.0, 0.7)) * structure_gate
+                        cur_l = cv2.cvtColor(context.working_image, cv2.COLOR_RGB2LAB).astype(np.float32)
+                        pre_l = cv2.cvtColor(pre_2b, cv2.COLOR_RGB2LAB).astype(np.float32)
+                        hp = pre_l[:, :, 0] - cv2.GaussianBlur(pre_l[:, :, 0], (0, 0), sigmaX=1.0)
+                        cur_l[:, :, 0] = np.clip(cur_l[:, :, 0] + w_back * hp, 0, 255)
+                        context.working_image = cv2.cvtColor(cur_l.astype(np.uint8), cv2.COLOR_LAB2RGB)
+                        context.add_log(
+                            f"G2 contour guard: edge energy retained {ratio:.2f}x — "
+                            "structure high-frequencies blended back."
+                        )
         except Exception as exc:
             context.add_log(f"Stage 2b DamageClusterSmooth failed: {exc}")
 

@@ -1,4 +1,5 @@
 import io
+import os
 import numpy as np
 import cv2
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -51,6 +52,101 @@ class ImageNormalizer:
                 raise ValueError(f"Failed to convert image to RGB: {str(e)}")
 
         return np.array(img)
+
+    @classmethod
+    def detect_ragged_borders(
+        cls,
+        img: np.ndarray,
+        brightness_floor: float = 180.0,
+        margin_frac: float = 0.18,
+        min_strip_frac: float = 0.55,
+    ) -> tuple[np.ndarray, bool, tuple[int, int, int, int]]:
+        """J-6 (2026-10-12 forensic pass): ragged border crop v2.
+
+        detect_and_crop_borders() requires near-uniform rows/cols (mean above
+        white_thresh AND std <= 6.0). Damaged scans fail both gates: the
+        cream/emulsion-loss border strips carry flake texture (std >> 6) and
+        sit below 242 brightness at 1932px, so the margins SURVIVED
+        downstream intact and every stage inpainted around them.
+
+        Strategy: bright + low-saturation border pixels form ragged connected
+        strips. Light erosion drops interior flakes but keeps full-height /
+        full-width border strips; components flush with the frame edge vote
+        per edge. When both side strips (or a side + top/bottom) are found,
+        crop to their inner edge — cropping damage is safer than inpainting
+        it, since LaMa then sees no border damage pixels at all.
+
+        Returns (cropped_img, has_ragged_border, (y0, y1, x0, x1)), same
+        bbox convention as detect_and_crop_borders.
+        PIXREVIVE_RAGGED_BORDER=0 disables.
+        """
+        disabled = os.environ.get("PIXREVIVE_RAGGED_BORDER", "1").strip().lower() in (
+            "0", "false", "no", "off"
+        )
+        h, w = img.shape[:2]
+        if disabled or h < 120 or w < 120:
+            return img, False, (0, h, 0, w)
+
+        lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB)
+        l_chan, a_chan, b_chan = cv2.split(lab)
+        c_ab = np.sqrt((a_chan.astype(np.int16) - 128) ** 2
+                       + (b_chan.astype(np.int16) - 128) ** 2)
+
+        # J-6 v2: measure per-column / per-row coverage of damaged-border
+        # CONTENT, not single connected components — ragged flake texture
+        # fragments under erosion and an area/length gate on one component
+        # misses real strips (measured on the synthetic damaged scan).
+        # Coverage: any 8-neighborhood context (3x3 dilate) of bright+neutral
+        # pixels, counted per column / row over the full span.
+        cand = ((l_chan > brightness_floor) & (c_ab < 22)).astype(np.uint8) * 255
+        cand = cv2.dilate(cand, np.ones((3, 3), np.uint8))
+        h_i, w_i = cand.shape[:2]
+        col_cov = cand.mean(axis=0) / 255.0   # (w,) per-column coverage
+        row_cov = cand.mean(axis=1) / 255.0   # (h,) per-row coverage
+
+        thresh = 0.55     # strip column/row counts when >=55% of it is border-content
+        band_frac = margin_frac          # strip may extend up to 18% of the side inward
+        min_thickness_frac = 0.04        # ... and must be at least 4% thick
+
+        def _find_inner(cov, side, from_end):
+            band = max(8, int(band_frac * side))
+            min_thick = max(8, int(min_thickness_frac * side))
+            if from_end:
+                seq = cov[::-1]
+            else:
+                seq = cov
+            run = 0
+            for i, v in enumerate(seq):
+                if v >= thresh:
+                    run += 1
+                    if i >= band:
+                        return None          # border extends deeper than the band: ambiguous
+                else:
+                    if run >= min_thick:
+                        return i if not from_end else side - i
+                    return None               # too thin to be a border strip
+            return None                        # never falls off — no inner edge
+
+        left_inner = _find_inner(col_cov, w_i, from_end=False)
+        right_inner = _find_inner(col_cov, w_i, from_end=True)
+        top_inner = _find_inner(row_cov, h_i, from_end=False)
+        bottom_inner = _find_inner(row_cov, h_i, from_end=True)
+
+        pad = 6
+        y0c = max(0, (top_inner + pad) if top_inner is not None else 0)
+        y1c = min(h_i, (bottom_inner - pad) if bottom_inner is not None else h_i)
+        x0c = max(0, (left_inner + pad) if left_inner is not None else 0)
+        x1c = min(w_i, (right_inner - pad) if right_inner is not None else w_i)
+
+        sides = sum(v is not None for v in (left_inner, right_inner, top_inner, bottom_inner))
+        crop_ok = (
+            sides >= 2
+            and (x1c - x0c) >= 0.45 * w_i
+            and (y1c - y0c) >= 0.45 * h_i
+        )
+        if not crop_ok:
+            return img, False, (0, h, 0, w)
+        return img[y0c:y1c, x0c:x1c].copy(), True, (y0c, y1c, x0c, x1c)
 
     @classmethod
     def detect_and_crop_borders(

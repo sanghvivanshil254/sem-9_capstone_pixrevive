@@ -12,7 +12,6 @@ Output directory: debug_output/ (relative to CWD, i.e. backend/)
 """
 
 import os
-import time
 import json
 import cv2
 import numpy as np
@@ -32,11 +31,6 @@ def _debug_enabled() -> bool:
 
 class DebugLogger:
     DEBUG_DIR = "debug_output"
-
-    @staticmethod
-    def _debug_enabled_flag() -> bool:
-        """Public accessor for debug mode — used by pipeline for conditional steps."""
-        return _debug_enabled()
 
     # ── Low-level helpers ──────────────────────────────────────────────────────
 

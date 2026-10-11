@@ -9,16 +9,11 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 import cv2
 import numpy as np
 import torch
-
 from ai.pipeline.pipeline_context import PipelineContext
 from ai.pipeline.debug_logger import DebugLogger
 from ai.pipeline.stages._helpers import _refresh_sharpness
-from ai.analysis.quality_analyzer import QualityAnalyzer
 from ai.analysis.face_detector import FaceDetector
 from ai.damage.enhanced_detector import EnhancedDamageDetector
-from ai.damage.tearmark_detector import TearmarkDetector
-from ai.damage.mask_refiner import MaskRefiner
-from ai.restoration.inpainting_engine import InpaintingEngine
 from ai.restoration.super_resolution import SuperResolution
 
 logger = logging.getLogger(__name__)
@@ -30,8 +25,6 @@ logger = logging.getLogger(__name__)
 EVIDENCE_DIR = os.path.abspath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "temp_results"))
 from ai.restoration.deblurrer import ImageDeblurrer, estimate_optical_blur
-from ai.colorization.color_refiner import ColorArtifactReducer
-from ai.postprocessing.enhancer import Harmonizer
 
 
 class FinishStagesMixin:
@@ -375,6 +368,13 @@ class FinishStagesMixin:
         context.start_timer("denoising")
 
         try:
+            # G1 (docs/REMEDIATION_PLAN_AB_G.md): structure/HF guard switches.
+            # Default on; PIXREVIVE_STRUCTURE_GUARD=0 / PIXREVIVE_HF_GUARD=0
+            # restore the pre-G1 behavior exactly.
+            _struct_guard = os.environ.get("PIXREVIVE_STRUCTURE_GUARD", "1").strip().lower() not in ("0", "false", "no", "off")
+            _hf_guard = os.environ.get("PIXREVIVE_HF_GUARD", "1").strip().lower() not in ("0", "false", "no", "off")
+            pre_canvas = context.working_image.copy()
+
             h_img, w_img = context.working_image.shape[:2]
             face_mask_2d = np.zeros((h_img, w_img), dtype=np.float32)
 
@@ -441,18 +441,40 @@ class FinishStagesMixin:
             # Adaptive filter strengths: scale h proportionally to measured noise floor.
             # bg_damaged drives aggressive smoothing; high sigma alone does NOT — we want
             # photographic grain preserved when the background has no damage (e.g. noisy Lena).
+            # J-8 (2026-10-12 forensic follow-up): damage-inflated sigma caps.
+            # Residual LaMa fill and surviving flakes inflate the MAD sigma
+            # estimate (measured: stain + fill drove sigma ~14 on the teared
+            # portrait), and h = 1.4*sigma then over-smoothed the whole
+            # background into the waxy watercolour look. Caps bind ONLY far
+            # above the floors (clean-image log contract h_face=5.5,
+            # h_mid=7.5, h_bg=6.5 untouched) so the pure-noise sigma-15
+            # reduction contract still holds in the undamaged branches.
+            # PIXREVIVE_NLM_CAP=0 reverts to the unbounded legacy scales.
+            _nlm_cap = float(os.environ.get("PIXREVIVE_NLM_CAP", "14.0") or "0")
             if bg_damaged:
                 h_bg = max(11.0, 1.4 * sigma_noise)
+                if _nlm_cap > 0:
+                    h_bg = min(h_bg, _nlm_cap)
             elif sigma_noise > 7.0:
                 h_bg = max(11.5, 1.25 * sigma_noise)
             else:
                 h_bg = max(6.5, 0.95 * sigma_noise)
+            # G1 note: an h_bg cap here was tried and removed — it broke the
+            # noise-reduction contract on all-noise frames (sigma 15 -> 8.9).
+            # Texture/contour preservation is owned by the coherence-gated
+            # protect map below and the HF re-injection guard, not by
+            # weakening the filter globally. The J-8 cap above targets only
+            # the DAMAGE branch, where σ is polluted by damage energy.
             h_mid = max(7.5, 1.10 * sigma_noise)
+            if _nlm_cap > 0 and bg_damaged:
+                h_mid = min(h_mid, _nlm_cap * 0.85)
             # Face zone: cap at 1.10x sigma regardless of small-face flag to retain skin texture.
             if is_small_face and sigma_noise > 4.0:
                 h_face = min(max(7.0, 1.10 * sigma_noise), 12.0)
             else:
                 h_face = max(5.5, 0.95 * sigma_noise)
+            if _nlm_cap > 0:
+                h_face = min(h_face, _nlm_cap)
 
             # 1. Background: Substantial NLM
             l_bg = cv2.fastNlMeansDenoising(l_chan, None, h=h_bg, templateWindowSize=7, searchWindowSize=21)
@@ -479,7 +501,15 @@ class FinishStagesMixin:
 
             noise_floor_var = max(16.0, sigma_noise ** 2)
             raw_texture = np.clip((local_var - 2.0 * noise_floor_var) / (2.5 * noise_floor_var), 0.0, 1.0)
-            texture_weight = raw_texture * max(0.0, 1.0 - sigma_noise / 15.0)
+            # G1: the old weight *vanished* as sigma grew (zero at sigma>=15),
+            # i.e. texture protection was weakest exactly when NLM h was
+            # strongest — the direct cause of waxy skin and melted hair on
+            # noisy inputs. Keep a 35% floor in textured zones; clean images
+            # (sigma small) take the original value unchanged via max().
+            texture_weight = np.maximum(
+                raw_texture * max(0.0, 1.0 - sigma_noise / 15.0),
+                raw_texture * 0.35,
+            ) if _struct_guard else raw_texture * max(0.0, 1.0 - sigma_noise / 15.0)
 
             protect_map = np.maximum(edge_weight, texture_weight)
 
@@ -514,6 +544,116 @@ class FinishStagesMixin:
             )
             # Evidence flag for the Restoration Report (T-2).
             context.image_metadata["denoise_applied"] = True
+
+            # G1: HF-retention guard. Laplacian-variance of the content region
+            # after denoise vs before. Below 0.55 the stage over-smoothed:
+            # blend pre-denoise high frequencies back into textured zones.
+            # Below 0.40 the canvas is wax — roll the stage back entirely.
+            if _hf_guard:
+                try:
+                    from ai.analysis.content_region import content_mask as _cm
+                    _cmask = _cm(cv2.cvtColor(pre_canvas, cv2.COLOR_RGB2GRAY)) > 0
+                    if _cmask.any():
+                        g0 = cv2.cvtColor(pre_canvas, cv2.COLOR_RGB2GRAY).astype(np.float32)
+                        g1 = cv2.cvtColor(context.working_image, cv2.COLOR_RGB2GRAY).astype(np.float32)
+                        v0 = float(np.var(cv2.Laplacian(g0, cv2.CV_32F)[_cmask]))
+                        v1 = float(np.var(cv2.Laplacian(g1, cv2.CV_32F)[_cmask]))
+                        ratio = v1 / max(v0, 1e-6)
+                        context.image_metadata["hf_retention_denoise"] = round(ratio, 3)
+                        # The guard is only meaningful when the pre-denoise
+                        # canvas HAS oriented structure (coherence map, median-
+                        # filtered tensor). On a signal-free noise field losing
+                        # ~all HF is the job — measured: pure sigma-15 noise
+                        # rolled back at 0.05x retention, un-doing a perfect
+                        # denoise (sigma 8.90 -> 0.00).
+                        from ai.analysis.structure import structure_gate as _sgate
+                        _sg = _sgate(g0)
+                        _has_structure = bool(float((_sg > 0.25).mean()) > 0.002)
+                        if not _has_structure:
+                            context.image_metadata["hf_guard_skipped_no_structure"] = True
+                        elif ratio < 0.15:
+                            # Catastrophic (measured 0.20 on the sepia figure:
+                            # sigma 7.41 -> 0.00). No amount of re-injection
+                            # rebuilds this; keep the pre-denoise canvas.
+                            context.working_image = pre_canvas
+                            context.add_log(
+                                f"[WARN] HF guard: denoise retained only {ratio:.2f}x "
+                                "high-frequency energy — stage rolled back."
+                            )
+                            warnings_list = context.image_metadata.setdefault("warnings", [])
+                            if "denoise_hf_rollback" not in warnings_list:
+                                warnings_list.append("denoise_hf_rollback")
+                        elif _has_structure and ratio < 0.55:
+                            # Selective HF re-injection (G1): the denoised base
+                            # keeps flat zones clean; the pre-denoise canvas'
+                            # high-pass is re-added ONLY on oriented structure.
+                            # The gate is structure-tensor coherence
+                            # (ai.analysis.structure), NOT plain Sobel/texture:
+                            # isotropic grain has high gradient energy too, and
+                            # re-injecting it failed the noise-reduction
+                            # contract (sigma 1.48 -> 8.9 on the regression
+                            # fixture). Hair strands, collar and jaw lines are
+                            # locally oriented — they pass; noise does not.
+                            alpha = float(np.clip((0.55 - ratio) / 0.40, 0.0, 0.85))
+                            pre_f = cv2.cvtColor(pre_canvas, cv2.COLOR_RGB2LAB).astype(np.float32)
+                            cur_f = cv2.cvtColor(context.working_image, cv2.COLOR_RGB2LAB).astype(np.float32)
+                            pre_l = pre_f[:, :, 0]
+                            pre_hp = pre_l - cv2.GaussianBlur(pre_l, (0, 0), sigmaX=1.2)
+                            from ai.analysis.structure import structure_gate as _sgate
+                            _pre_gray = cv2.cvtColor(pre_canvas, cv2.COLOR_RGB2GRAY).astype(np.float32)
+                            # Hair guard (debug session 2026-10-01, RC-3): the
+                            # default mag floor (45) sits ABOVE real hair-strand
+                            # gradients on small canvases (measured p50 hair grad
+                            # 26 on the 447px sepia portrait), so the shipped
+                            # gate re-injected collar/jaw but skipped hair and
+                            # NLM's 0.20x HF retention froze it into the
+                            # "puffed, stamped" look. Floor 24 admits strands;
+                            # the coherence term still rejects isotropic grain.
+                            # PIXREVIVE_HAIR_GUARD=0 reverts to floor 45.
+                            _hair_guard = os.environ.get("PIXREVIVE_HAIR_GUARD", "1").strip().lower() not in ("0", "false", "no", "off")
+                            gate = _sgate(_pre_gray, mag_floor=24.0 if _hair_guard else 45.0)
+                            # Jaw/neck band boost (G2): bottom 30% of each face
+                            # bbox extended 15% below — chin shadow, jawline,
+                            # collar region.
+                            jaw_band = np.zeros((h_img, w_img), dtype=np.float32)
+                            # Hair band boost (RC-3): the region ABOVE each face
+                            # bbox (top-of-head hair) plus narrow side bands
+                            # (framing hair). The boost only amplifies pixels the
+                            # coherence gate already passed — it cannot create
+                            # structure in flat background.
+                            hair_band = np.zeros((h_img, w_img), dtype=np.float32)
+                            for f in faces:
+                                bbox = f.get("bbox")
+                                if bbox and len(bbox) >= 4:
+                                    x0, y0, x1, y1 = [int(v) for v in bbox[:4]]
+                                    x0 = max(0, x0); y0 = max(0, y0)
+                                    x1 = min(w_img, x1); y1 = min(h_img, y1)
+                                    bw_, bh_ = x1 - x0, y1 - y0
+                                    if bw_ <= 0 or bh_ <= 0:
+                                        continue
+                                    hy0 = max(0, y0 - int(0.60 * bh_))
+                                    hy1 = min(h_img, y0 + int(0.08 * bh_))
+                                    hx0 = max(0, x0 - int(0.15 * bw_))
+                                    hx1 = min(w_img, x1 + int(0.15 * bw_))
+                                    hair_band[hy0:hy1, hx0:hx1] = 1.0
+                                    sy0, sy1 = max(0, y0 - int(0.1 * bh_)), min(h_img, y1 + int(0.1 * bh_))
+                                    lx0, lx1 = max(0, x0 - int(0.25 * bw_)), min(w_img, x0 + int(0.05 * bw_))
+                                    rx0, rx1 = max(0, x1 - int(0.05 * bw_)), min(w_img, x1 + int(0.25 * bw_))
+                                    hair_band[sy0:sy1, lx0:lx1] = 1.0
+                                    hair_band[sy0:sy1, rx0:rx1] = 1.0
+                            jaw_band = cv2.GaussianBlur(jaw_band, (31, 31), 0)
+                            hair_band = cv2.GaussianBlur(hair_band, (31, 31), 0)
+                            tw = np.clip(gate * (1.0 + 0.5 * jaw_band + 0.5 * hair_band), 0.0, 1.0) * alpha
+                            cur_f[:, :, 0] = np.clip(cur_f[:, :, 0] + tw * pre_hp, 0, 255)
+                            context.working_image = cv2.cvtColor(
+                                cur_f.astype(np.uint8), cv2.COLOR_LAB2RGB)
+                            context.add_log(
+                                f"HF guard: denoise retained {ratio:.2f}x HF energy — "
+                                f"structure high-frequencies re-injected (alpha={alpha:.2f}"
+                                + (", hair band armed" if _hair_guard else "") + ")."
+                            )
+                except Exception as hf_exc:
+                    context.add_log(f"HF guard check failed: {hf_exc}")
         except Exception as exc:
             context.add_log(f"Stage 5 Denoise failed: {exc}")
 
@@ -548,6 +688,12 @@ class FinishStagesMixin:
                 for f in faces if "bbox" in f and len(f["bbox"]) >= 4
             ]
             min_face_size = min(face_sizes) if face_sizes else 999
+            # J-4a: previously the second clause was `min_dim < 320`, which
+            # skipped the deferral whenever the canvas was >= 320px even when
+            # the face itself was tiny — the tiny face then got GFPGAN at
+            # input resolution (upscale=1) and SR re-upscaled the blended
+            # result, doubling the small face's artifacts. Now the small-face
+            # condition alone defers to the hub after SR.
             if min_dim < 320 or min_face_size < 90:
                 context.pipeline_flags["face_restore_deferred_to_post_sr"] = True
                 context.image_metadata["gfpgan_deferred"] = True
@@ -567,6 +713,75 @@ class FinishStagesMixin:
             self.face_restorer.restore(context)
             context.image_metadata["gfpgan_applied"] = True
             context.add_log("Stage 7 FaceRestoration: GFPGAN completed.")
+
+            # J-9 (2026-10-11 forensic pass): face/neck chroma consistency
+            # validator. GFPGAN blends RGB pastes that may discard or alter
+            # the chroma acquired in Stage 6, producing the measured waxy
+            # face / mismatched iris / neck seam. If the mean LAB a/b of the
+            # largest face diverges from the neck band below it by > 12,
+            # the paste boundary is visibly tone-shifted — log the stat so
+            # the restoration report can flag it (non-destructive).
+            try:
+                _faces = context.image_metadata.get("faces") or []
+                if _faces:
+                    lb = _faces[0].get("bbox") or []
+                    if len(lb) == 4:
+                        x0, y0, x1, y1 = (int(v) for v in lb)
+                        h_i, w_i = context.working_image.shape[:2]
+                        x0, y0 = max(0, x0), max(0, y0)
+                        x1, y1 = min(w_i, x1), min(h_i, y1)
+                        if x1 > x0 and y1 > y0 and y1 + 40 < h_i:
+                            lab_now = cv2.cvtColor(
+                                context.working_image, cv2.COLOR_RGB2LAB
+                            ).astype(np.float32)
+                            face_l = lab_now[y0:y1, x0:x1]
+                            neck_band = lab_now[y1:min(h_i, y1 + int((y1 - y0) * 0.4)),
+                                                x0:x1]
+                            if neck_band.size > 256:
+                                fa, fb = face_l[:, :, 1].mean() - 128, face_l[:, :, 2].mean() - 128
+                                na, nb = neck_band[:, :, 1].mean() - 128, neck_band[:, :, 2].mean() - 128
+                                dev = abs(fa - na) + abs(fb - nb)
+                                context.image_metadata["face_neck_chroma_dev"] = round(dev, 2)
+                                if dev > 24:
+                                    context.add_log(
+                                        f"[WARN] FaceNeck Chroma: face vs neck "
+                                        f"chroma dev {dev:.1f} > 24 — paste "
+                                        "boundary likely tone-shifted."
+                                    )
+                                # J-9b (2026-10-12): active rebalance. GFPGAN
+                                # pastes RGB crops whose chroma can diverge
+                                # from Stage 6's colorized skin (measured: waxy
+                                # face + green neck seam on the teared
+                                # portrait). Shift the FACE band's a/b toward
+                                # the neck band's mean by the EXCESS deviation
+                                # above 12 (keep a floor so a legitimately
+                                # different tonal zone is not leveled), through
+                                # a feathered face mask so the correction never
+                                # touches hair/background. PIXREVIVE_FACE_NECK_FIX=0
+                                # reverts to validator-only behaviour.
+                                if (os.environ.get("PIXREVIVE_FACE_NECK_FIX", "1").strip().lower()
+                                        not in ("0", "false", "no", "off") and dev > 12):
+                                    fb_mask = np.zeros(
+                                        (lab_now.shape[0], lab_now.shape[1]), np.float32)
+                                    cv2.rectangle(fb_mask, (x0, y0), (x1, y1), 1.0, -1)
+                                    fb_mask = cv2.GaussianBlur(fb_mask, (0, 0), sigmaX=max(3.0, (x1 - x0) * 0.06))
+                                    excess = min(max(dev - 12.0, 0.0), 20.0) / 2.0
+                                    da = np.clip(fa - na, -excess, excess)
+                                    db = np.clip(fb - nb, -excess, excess)
+                                    lab_fix = lab_now.copy()
+                                    lab_fix[:, :, 1] = np.clip(
+                                        lab_fix[:, :, 1] - da * fb_mask, 0, 255)
+                                    lab_fix[:, :, 2] = np.clip(
+                                        lab_fix[:, :, 2] - db * fb_mask, 0, 255)
+                                    context.working_image = cv2.cvtColor(
+                                        lab_fix.astype(np.uint8), cv2.COLOR_LAB2RGB)
+                                    context.add_log(
+                                        f"FaceNeck Chroma: face chroma nudged toward "
+                                        f"neck (da={-da:.1f}, db={-db:.1f}, mask feather "
+                                        f"linear-in-bbox)."
+                                    )
+            except Exception as _chroma_exc:
+                context.add_log(f"[J-9] face/neck chroma check skipped: {_chroma_exc}")
         except Exception as exc:
             context.add_log(f"Stage 7 FaceRestoration failed: {exc}")
 
@@ -586,7 +801,27 @@ class FinishStagesMixin:
             
             noise_score = float(context.image_metadata.get("noise_score", 0.0))
             sigma_c = max(7.0, 1.0 * noise_score) if noise_score > 6.0 else 7.0
+
+            # Hair guard (RC-3b): the bilateral's job is killing grain spikes
+            # before SR amplifies them, but measured on the teared portrait it
+            # also halved residual hair-strand gradients (p50 1.94 -> 1.18) —
+            # the last crispness left after NLM. Blend the bilateral result
+            # toward the original L wherever the structure gate says oriented
+            # texture lives, so strands survive to SR. PIXREVIVE_HAIR_GUARD=0
+            # reverts to the unconditioned filter.
             l_smooth = cv2.bilateralFilter(l_chan, d=5, sigmaColor=sigma_c, sigmaSpace=3.0)
+            if os.environ.get("PIXREVIVE_HAIR_GUARD", "1").strip().lower() not in ("0", "false", "no", "off"):
+                try:
+                    from ai.analysis.structure import structure_gate as _sg8
+                    _g8 = _sg8(l_chan.astype(np.float32), mag_floor=24.0)
+                    if float(_g8.mean()) > 0.002:
+                        _keep = np.clip(_g8 * 1.2, 0.0, 0.85)
+                        l_smooth = (
+                            l_smooth.astype(np.float32) * (1.0 - _keep)
+                            + l_chan.astype(np.float32) * _keep
+                        ).astype(l_chan.dtype)
+                except Exception:
+                    pass
 
             # On noisy scans, also diffuse residual color grain on a* and b* before 4x Real-ESRGAN sharpening
             if noise_score > 8.0:
@@ -684,6 +919,59 @@ class FinishStagesMixin:
             a_chan = lab[:, :, 1]
             b_chan = lab[:, :, 2]
 
+            # J-4c: residual speck sweep (pre-sharpen). Stage 0's global
+            # tophat only kills specks evaluated against a uniform background;
+            # isolated bright flecks that survived it get 4x LARGER after SR
+            # and are then amplified by sharpening. Remove connected bright
+            # AND dark specks below a size cap that is far below anything with
+            # real photographic content (faces/strands are >> 64px connected).
+            PIXREVIVE_SPECK_SWEEP = os.environ.get(
+                "PIXREVIVE_SPECK_SWEEP", "1"
+            ).strip().lower() not in ("0", "false", "no", "off")
+            if PIXREVIVE_SPECK_SWEEP:
+                try:
+                    h_sp, w_sp = l_chan.shape[:2]
+                    speck_cap = max(24, int((h_sp * w_sp) ** 0.5 * 0.010))  # ~1% of mean side
+                    u8 = lab.astype(np.uint8)
+                    l_u8 = u8[:, :, 0]
+                    a_u8 = u8[:, :, 1]
+                    b_u8 = u8[:, :, 2]
+                    # Local background via median blur; residual = what departs from it.
+                    l_bg = cv2.medianBlur(l_u8, 9)
+                    l_res = cv2.absdiff(l_u8, l_bg)
+                    iso = (l_res > 22).astype(np.uint8)
+                    if iso.any():
+                        n_lbl, lbl, stats, _ = cv2.connectedComponentsWithStats(iso, connectivity=8)
+                        kill = np.zeros_like(iso)
+                        removed = 0
+                        for i in range(1, n_lbl):
+                            area = int(stats[i, cv2.CC_STAT_AREA])
+                            if area <= speck_cap:
+                                kill[lbl == i] = 255
+                                removed += 1
+                        if removed:
+                            kill_f = cv2.GaussianBlur(
+                                (kill.astype(np.float32) / 255.0), (0, 0), sigmaX=1.1
+                            )[..., None]
+                            # Neutralise by pulling isolated speck pixels to the
+                            # local median background in LAB (both L and chroma).
+                            a_bg = cv2.medianBlur(a_u8, 9).astype(np.float32)
+                            b_bg = cv2.medianBlur(b_u8, 9).astype(np.float32)
+                            l_bg_f = l_bg.astype(np.float32)
+                            lab_f = lab
+                            lab_f[:, :, 0] = lab_f[:, :, 0] * (1.0 - kill_f[..., 0]) + l_bg_f * kill_f[..., 0]
+                            lab_f[:, :, 1] = lab_f[:, :, 1] * (1.0 - kill_f[..., 0]) + a_bg * kill_f[..., 0]
+                            lab_f[:, :, 2] = lab_f[:, :, 2] * (1.0 - kill_f[..., 0]) + b_bg * kill_f[..., 0]
+                            l_chan = lab[:, :, 0]
+                            a_chan = lab[:, :, 1]
+                            b_chan = lab[:, :, 2]
+                            context.add_log(
+                                f"Stage 10 Speck sweep: {removed} residual post-SR specks "
+                                f"neutralised (cap={speck_cap}px)."
+                            )
+                except Exception as sweep_exc:
+                    context.add_log(f"Stage 10 speck sweep skipped: {sweep_exc}")
+
             # 1. Edge & Contour Detection via Sobel Gradient Magnitude
             gx = cv2.Sobel(l_chan, cv2.CV_32F, 1, 0, ksize=3)
             gy = cv2.Sobel(l_chan, cv2.CV_32F, 0, 1, ksize=3)
@@ -702,13 +990,58 @@ class FinishStagesMixin:
 
             # Combine: gentle micro-detail everywhere + pronounced crispness on internal borders
             l_crisp = l_chan + 0.25 * diff_micro + 0.45 * edge_weight * diff_contour
+
+            # J-4b face-aware damping: inside detected-face ROIs, cap the contour
+            # gain at 60% so GFPGAN-synthesised skin is not re-etched into a
+            # plastic/stylised look. Background keeps full gain (that is where
+            # crispness was missing). PIXREVIVE_FACE_SHARPEN=0 reverts.
+            if os.environ.get("PIXREVIVE_FACE_SHARPEN", "1").strip().lower() not in ("0", "false", "no", "off"):
+                faces = (context.image_metadata or {}).get("faces") or []
+                h_img, w_img = l_chan.shape[:2]
+                face_damp = np.ones((h_img, w_img), dtype=np.float32)
+                any_face = False
+                for f in faces:
+                    box = f.get("bbox") if isinstance(f, dict) else None
+                    if not box or len(box) < 4:
+                        continue
+                    px1, py1, px2, py2 = (int(round(box[0])), int(round(box[1])),
+                                          int(round(box[2])), int(round(box[3])))
+                    # Face boxes are rescaled to the working canvas by
+                    # sync_geometry_to_working_image(); clamp defensively.
+                    px1 = max(0, min(w_img - 1, px1))
+                    py1 = max(0, min(h_img - 1, py1))
+                    px2 = max(px1 + 1, min(w_img, px2))
+                    py2 = max(py1 + 1, min(h_img, py2))
+                    any_face = True
+                    face_damp[py1:py2, px1:px2] = 0.6
+                if any_face:
+                    face_damp = cv2.GaussianBlur(face_damp, (0, 0), sigmaX=float(max(3.0, min(h_img, w_img) * 0.01)))
+                    face_damp = np.clip(face_damp, 0.6, 1.0)[..., None]
+                    # Damp only the contour term inside faces; keep micro detail.
+                    l_crisp = l_chan + 0.25 * diff_micro + (0.45 * face_damp) * edge_weight * diff_contour
+                else:
+                    face_damp = None
+
+            # B5 (docs/REMEDIATION_PLAN_AB_G.md): clip guard — unsharp
+            # undershoot crushes dark hair to L*<=1. Attenuate the sharpening
+            # contribution where the result would clip and the pre-sharpen
+            # canvas was not already clipped. PIXREVIVE_CLIP_GUARD=0 reverts.
+            if os.environ.get("PIXREVIVE_CLIP_GUARD", "1").strip().lower() not in ("0", "false", "no", "off"):
+                pre_clip_dark = (l_chan <= 1.5)
+                would_clip = (l_crisp <= 0.5) & ~pre_clip_dark
+                if would_clip.any():
+                    damp = np.where(would_clip, 0.35, 1.0)
+                    l_crisp = l_chan + damp * (l_crisp - l_chan)
+                n_saved = int(would_clip.sum()) if would_clip.any() else 0
             l_crisp = np.clip(l_crisp, 0, 255)
 
             lab[:, :, 0] = l_crisp
             context.working_image = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
             context.add_log(
                 "Stage 10 Sharpen: Edge-directed multi-scale crispness applied "
-                "(micro=0.25, border_contour=0.45 on L* channel)."
+                "(micro=0.25, border_contour=0.45 on L* channel"
+                + (f"; clip guard damped {n_saved}px)." if os.environ.get("PIXREVIVE_CLIP_GUARD", "1").strip().lower() not in ("0", "false", "no", "off") and n_saved else ")."
+                )
             )
         except Exception as exc:
             context.add_log(f"Stage 10 Sharpen failed: {exc}")
@@ -733,7 +1066,18 @@ class FinishStagesMixin:
             # Prevents local-contrast halos and the 'glossy embossed/varnish' look on skin/fabric
             h_img, w_img = img.shape[:2]
             grid_size = max(16, min(32, w_img // 128))
-            clahe = cv2.createCLAHE(clipLimit=0.85, tileGridSize=(grid_size, grid_size))
+            # B5: cap the CLAHE clip so post-CLAHE shadow clipping stays within
+            # input+1% (dynamic check, not a hardcoded device assumption).
+            clip_limit = 0.85
+            if os.environ.get("PIXREVIVE_CLIP_GUARD", "1").strip().lower() not in ("0", "false", "no", "off"):
+                _pre_dark = float(np.mean(l <= 1))
+                clip_limit = 0.85
+                for _ in range(3):
+                    _probe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(grid_size, grid_size)).apply(l)
+                    if float(np.mean(_probe <= 1)) <= _pre_dark + 0.01:
+                        break
+                    clip_limit *= 0.6
+            clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(grid_size, grid_size))
             l_clahe = clahe.apply(l)
 
             # Step 2: Smooth natural filmic tone curve (gentle shadow lift, neutral midtones)
@@ -749,6 +1093,42 @@ class FinishStagesMixin:
             lab_graded = cv2.merge([l_curved, a, b])
             context.working_image = cv2.cvtColor(lab_graded, cv2.COLOR_LAB2RGB)
             context.add_log("Stage 10b ProjectorGrade: Tamed CLAHE (clip=0.85, grid=16-32) and natural film curve applied.")
+
+            # J-10 (2026-10-12 forensic pass): film-grain re-injection.
+            # Stages 5 + 9: the NLM flattens the grain floor and Real-ESRGAN
+            # synthesises detail but never photographic grain — the composite
+            # result reads waxy/watercolour even when structure survives.
+            # Inject resolution-scaled, midtone-weighted grain on the L*
+            # channel over the CONTENT region only (scanner-bed margins stay
+            # clean), slightly correlated (sigma 0.8) so it reads as emulsion
+            # grain, not snow. Amplitude 2.2 LAB units at 1932px, scaled by
+            # sqrt(canvas/1932) so the visible grain density is stable.
+            # PIXREVIVE_GRAIN=0 reverts.
+            if os.environ.get("PIXREVIVE_GRAIN", "1").strip().lower() not in ("0", "false", "no", "off"):
+                try:
+                    from ai.analysis.content_region import content_mask as _cm10b
+                    _gray10b = cv2.cvtColor(context.working_image, cv2.COLOR_RGB2GRAY)
+                    _cmask = (_cm10b(_gray10b) > 0).astype(np.float32)
+                    if _cmask.any():
+                        h_g, w_g = l_curved.shape[:2]
+                        rng = np.random.default_rng()
+                        g_noise = rng.normal(0.0, 1.0, (h_g, w_g)).astype(np.float32)
+                        g_noise = cv2.GaussianBlur(g_noise, (0, 0), 0.8)
+                        g_noise = g_noise / max(float(g_noise.std()), 1e-6)
+                        l_f32 = l_curved.astype(np.float32)
+                        midtone = np.clip(1.0 - np.abs((l_f32 - 128.0) / 127.0), 0.0, 1.0) ** 1.5
+                        amp = 2.2 * float(np.sqrt(min(h_g, w_g) / 1932.0))
+                        l_grain = np.clip(
+                            l_f32 + amp * midtone * g_noise * _cmask, 0, 255
+                        ).astype(np.uint8)
+                        lab_graded = cv2.merge([l_grain, a, b])
+                        context.working_image = cv2.cvtColor(lab_graded, cv2.COLOR_LAB2RGB)
+                        context.add_log(
+                            f"Stage 10b Grain: film-grain re-injected over content "
+                            f"(amp={amp:.1f}, coverage={float(_cmask.mean()):.2f})."
+                        )
+                except Exception as grain_exc:
+                    context.add_log(f"Stage 10b grain re-injection skipped: {grain_exc}")
         except Exception as exc:
             context.add_log(f"Stage 10b ProjectorGrade failed: {exc}")
 
@@ -768,8 +1148,9 @@ class FinishStagesMixin:
         findings into metadata["semantic"] for the report. In V0 every finding
         is disclosure-only; V1 promotes them to targeted re-imagine masks.
         """
-        if on_progress:
-            on_progress("semantic_validate", 99, "Validating semantic plausibility...")
+        # Internal stage (Phase V0): report-only and emits NO progress event —
+        # the same contract as refresh_faces — so the frontend dot row and the
+        # stream audit's known-id set (stage_ids()) stay untouched.
         context.start_timer("semantic_validate")
         try:
             from ai.validation.semantic_validator import run_semantic_validation

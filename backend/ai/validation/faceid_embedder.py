@@ -67,11 +67,6 @@ def _arcface_weights_path(weights_dir: str | None = None) -> str:
     return os.path.join(base, ARCFACE_FILE)
 
 
-def arcface_available(weights_dir: str | None = None) -> bool:
-    """True when the ArcFace ONNX is on disk (YuNet comes from the SFace dir)."""
-    return os.path.exists(_arcface_weights_path(weights_dir))
-
-
 def _make_yunet():
     """YuNet detector from the sface weights dir (shared with the gate)."""
     from ai.validation.face_identity_gate import WeightsDirDefault as _SFaceDir

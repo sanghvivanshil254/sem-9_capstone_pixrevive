@@ -18,7 +18,6 @@ import os
 import logging
 import math
 import torch
-import torch.nn.functional as F_nn
 import numpy as np
 from PIL import Image
 from ai.models.base_model import BaseRestorer
@@ -27,6 +26,43 @@ from ai.pipeline.pipeline_context import PipelineContext
 # ─── 2K output targets ────────────────────────────────────────────────────────
 _2K_LONG_SIDE = 2048    # longest side in pixels
 _MIN_LONG_SIDE = 1024   # never return smaller than this
+
+
+def _configured_long_side() -> int | None:
+    """Optional output-resolution override via PIXREVIVE_TARGET_LONG_SIDE.
+
+    Regulated: values >4096 are clamped to 4096 (the hard ceiling is
+    _MAX_SR_OUTPUT_PIXELS anyway) and invalid values fall back to the
+    default 2K behaviour.
+    """
+    raw = os.environ.get("PIXREVIVE_TARGET_LONG_SIDE", "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    if value < 256:
+        return None
+    return min(value, 4096)
+
+
+def _configured_long_side() -> int | None:
+    """Optional output-resolution override via PIXREVIVE_TARGET_LONG_SIDE.
+
+    Regulated: values >4096 are clamped (солютly capped by _MAX_SR_OUTPUT_PIXELS
+    anyway) and invalid values fall back to the default 2K behavior.
+    """
+    raw = os.environ.get("PIXREVIVE_TARGET_LONG_SIDE", "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    if value < 256:
+        return None
+    return min(value, 4096)
 
 
 def _realesrgan_tile_forward(
@@ -55,6 +91,14 @@ def _realesrgan_tile_forward(
     output_h = height * 4
     output_w = width * 4
     output = torch.zeros((batch, channel, output_h, output_w), dtype=torch.float32)
+    # A4 (docs/REMEDIATION_PLAN_AB_G.md): accumulate overlapping tiles with a
+    # cosine-feathered weight instead of replace-style writes — adjacent tiles
+    # see different padding context and disagree slightly; replace-writes turn
+    # that disagreement into hard tile seams (visible as grid blocks on
+    # posterized zones). PIXREVIVE_SEAM_QUALITY=0 reverts to hard writes.
+    _seam_quality = os.environ.get("PIXREVIVE_SEAM_QUALITY", "1").strip().lower() not in ("0", "false", "no", "off")
+    acc = torch.zeros_like(output) if _seam_quality else None
+    wsum = torch.zeros((1, 1, output_h, output_w), dtype=torch.float32) if _seam_quality else None
 
     tiles_x = math.ceil(width / tile_size)
     tiles_y = math.ceil(height / tile_size)
@@ -89,7 +133,34 @@ def _realesrgan_tile_forward(
             oy1 = (y1 - y1p) * 4
             oy2 = oy1 + (y2 - y1) * 4
 
-            output[:, :, dy1:dy2, dx1:dx2] = tile_out[:, :, oy1:oy2, ox1:ox2]
+            # Full padded tile is blended, not just its core: weight 1 across
+            # the core, cosine taper to ~0 only across the PAD ring (which the
+            # neighboring tile's core covers). Every output pixel therefore
+            # receives weight-1 coverage from at least one tile — the first
+            # version tapered to 0 at each tile's CORE edge, so the seams
+            # (where the taper met) had zero total weight and rendered as dark
+            # cross lines on both remediation fixtures.
+            th_p, tw_p = tile_out.shape[2], tile_out.shape[3]
+            wy = torch.ones(th_p, dtype=torch.float32)
+            wx = torch.ones(tw_p, dtype=torch.float32)
+            ramp = tile_pad * 4
+            if ramp > 1:
+                t = torch.linspace(0.0, 1.0, ramp)
+                cos_ramp = 0.5 - 0.5 * torch.cos(t * math.pi)
+                if y1p > 0:
+                    wy[:ramp] = torch.minimum(wy[:ramp], cos_ramp)
+                if y2p < height:
+                    wy[-ramp:] = torch.minimum(wy[-ramp:], cos_ramp.flip(0))
+                if x1p > 0:
+                    wx[:ramp] = torch.minimum(wx[:ramp], cos_ramp)
+                if x2p < width:
+                    wx[-ramp:] = torch.minimum(wx[-ramp:], cos_ramp.flip(0))
+            w2d = wy[:, None] * wx[None, :]
+            acc[:, :, y1p * 4:y2p * 4, x1p * 4:x2p * 4] += tile_out[0] * w2d
+            wsum[:, :, y1p * 4:y2p * 4, x1p * 4:x2p * 4] += w2d
+
+    if _seam_quality:
+        output = acc / torch.clamp(wsum, min=1e-6)
 
     return output
 
@@ -170,7 +241,17 @@ def _resize_to_long_side(img_np: np.ndarray, target_long_side: int) -> np.ndarra
 
 
 def _target_long_side_for_source(source_long_side: int) -> int:
-    """Avoid inventing detail by over-enlarging tiny sources."""
+    """Avoid inventing detail by over-enlarging tiny sources.
+
+    PIXREVIVE_TARGET_LONG_SIDE (256..4096) overrides the default; tiny-source
+    multipliers still apply so small scans are never blown up beyond a 4x
+    inventable-detail bound, unless the env override is explicit.
+    """
+    override = _configured_long_side()
+    if override is not None:
+        if source_long_side < 256:
+            return min(override, max(1, source_long_side * 4))
+        return override
     if source_long_side < 256:
         return max(1, source_long_side * 4)
     if source_long_side < 512:
@@ -189,10 +270,6 @@ def _determine_tile_size(device: str) -> int:
         except Exception:
             return 256
     return 192
-
-
-def _resize_to_2k(img_np: np.ndarray) -> np.ndarray:
-    return _resize_to_long_side(img_np, _2K_LONG_SIDE)
 
 
 # Ceiling on the ×4 OUTPUT tensor. _realesrgan_tile_forward preallocates a

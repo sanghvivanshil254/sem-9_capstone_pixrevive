@@ -114,6 +114,7 @@ precise rather than a gate on a blunt filter.
 from __future__ import annotations
 
 import logging
+import os
 import warnings
 from dataclasses import dataclass
 from typing import List, Tuple
@@ -122,6 +123,15 @@ import cv2
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+# ─── A2 isolated-blob inpainting (docs/REMEDIATION_PLAN_AB_G.md) ─────────────
+# Values scale with the image so the same constants work at scan and SR scale.
+_DISABLED = {"0", "false", "no", "off"}
+_BLOB_MIN_AREA = 1            # amplitude + isolation gates separate dust from grain
+_BLOB_MAX_AREA_FRAC = 6e-4    # max blob area as fraction of h*w (≈120px @447²)
+_BLOB_MIN_CONTRAST = 20.0     # min local contrast (grey levels) to be dust
+_BLOB_MAX_STRUCTURE_TOUCH = 0.35  # max structure-pixel share inside a component
+_BLOB_COVERAGE_CAP_PCT = 4.0  # frame cap — above this it is a texture field
 
 # The 8-neighbourhood, in the order used to build the difference stack. Also the
 # 8 directions searched by the continuation veto.
@@ -422,6 +432,103 @@ class ImpulseDenoiser:
             out[:, :, c] = np.rint(np.clip(filled, 0, 255)).astype(np.uint8)
 
         return (out[:, :, 0] if single else out), field
+
+    @staticmethod
+    def suppress_isolated_blobs(context: "PipelineContext") -> bool:  # noqa: F821
+        """A2 (remediation plan docs/REMEDIATION_PLAN_AB_G.md): inpaint
+        isolated dust blobs that no other stage claims.
+
+        The pipeline's coverage gates route *sparse structural* damage to LaMa
+        and *fields* of specks to the denoise path, but mid-size isolated blobs
+        (dust grains, emulsion dots, stain pinpoints — bright OR dark, up to a
+        few hundred px at scan scale) can survive every detector and reach the
+        output. Detection = morphological top-hat + black-hat (contrast against
+        the local background, 21px scale) + median-difference agreement; every
+        candidate must then pass an isolation filter: a component qualifies only
+        when its boundary touches few image-structure pixels, so cracks, fabric
+        weave, printed stipple and film grain texture are never candidates.
+        Removal = dilate 3 + Telea r=3, bounded by a frame-coverage cap.
+
+        Self-gating: no-op unless candidate coverage lands in a plausible dust
+        band and the robust noise floor is below the blob contrast. Clean or
+        uniformly noisy frames measure out of the band and pass through.
+        Flag: PIXREVIVE_BLOB_INPAINT=0 reverts.
+        """
+        if os.environ.get("PIXREVIVE_BLOB_INPAINT", "1").strip().lower() in _DISABLED:
+            return False
+        img = context.working_image
+        if img is None or img.ndim != 3:
+            return False
+        h, w = img.shape[:2]
+        if h * w < 64 * 64:
+            return False
+
+        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21))
+        tophat = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel)
+        blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, kernel)
+
+        # Robust noise floor so grain texture is not mistaken for blobs.
+        med = cv2.medianBlur(gray, 3).astype(np.float32)
+        sigma_floor = 1.4826 * float(
+            np.median(np.abs(gray.astype(np.float32) - med)))
+
+        blob_amp = max(_BLOB_MIN_CONTRAST, 3.5 * sigma_floor)
+        cand = ((tophat > blob_amp) | (blackhat > blob_amp)).astype(np.uint8)
+
+        # Median-difference agreement (specks read as median outliers too).
+        cand &= (np.abs(gray.astype(np.float32) - med) > blob_amp).astype(np.uint8)
+        if not np.any(cand):
+            context.image_metadata["blob_inpaint"] = {
+                "ran": True, "removed_blobs": 0, "coverage_pct": 0.0}
+            return False
+
+        num, lbl, stats, _ = cv2.connectedComponentsWithStats(cand, connectivity=8)
+        blob_max = max(_BLOB_MIN_AREA + 1,
+                       int(_BLOB_MAX_AREA_FRAC * h * w))
+        # Structure evidence: strong luminance contours INSIDE a component
+        # mean it carries real content (a crack segment, a text stroke) — dust
+        # blob interiors are flat. Measured on the component pixels only, so
+        # mottled paper around a dust grain does not protect the grain.
+        gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        grad = np.sqrt(gx * gx + gy * gy)
+        structure = grad > 40.0
+
+        keep = np.zeros_like(cand)
+        removed = 0
+        for i in range(1, num):
+            area = int(stats[i, cv2.CC_STAT_AREA])
+            if area < _BLOB_MIN_AREA or area > blob_max:
+                continue
+            comp = lbl == i
+            touch = float(np.sum(structure[comp])) / area
+            if touch > _BLOB_MAX_STRUCTURE_TOUCH:
+                continue
+            keep[comp] = 255
+            removed += 1
+
+        coverage = float(np.sum(keep > 0) / (h * w) * 100)
+        context.image_metadata["blob_inpaint"] = {
+            "ran": True,
+            "removed_blobs": removed,
+            "coverage_pct": round(coverage, 3),
+            "blob_amp": round(blob_amp, 1),
+        }
+        if removed == 0 or coverage > _BLOB_COVERAGE_CAP_PCT:
+            if coverage > _BLOB_COVERAGE_CAP_PCT:
+                context.add_log(
+                    f"BlobInpaint: candidate coverage {coverage:.2f}% above "
+                    f"{_BLOB_COVERAGE_CAP_PCT:.1f}% cap — texture field, skipped.")
+            return False
+
+        mask = cv2.dilate(keep, cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
+        context.working_image = cv2.inpaint(img, mask, 3, cv2.INPAINT_TELEA)
+        context.add_log(
+            f"BlobInpaint: {removed} isolated dust blob(s) inpainted "
+            f"({coverage:.2f}% of frame, contrast>{blob_amp:.0f}).")
+        return True
 
     @staticmethod
     def suppress(context: "PipelineContext") -> bool:  # noqa: F821

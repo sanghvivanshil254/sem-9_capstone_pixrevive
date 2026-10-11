@@ -56,7 +56,6 @@ from ai.pipeline.pipeline_router import PipelineRouter
 from ai.pipeline.stage_registry import STAGE_REGISTRY
 from ai.preprocessing.image_normalizer import ImageNormalizer
 from ai.preprocessing.halftone_suppressor import HalftoneSuppressor
-from ai.analysis.quality_analyzer import QualityAnalyzer
 from ai.analysis.face_detector import FaceDetector
 from ai.damage.enhanced_detector import EnhancedDamageDetector
 from ai.damage.tearmark_detector import TearmarkDetector
@@ -68,7 +67,6 @@ from ai.colorization.color_refiner import ColorArtifactReducer
 from ai.restoration.super_resolution import SuperResolution
 from ai.postprocessing.enhancer import Harmonizer
 from ai.pipeline.debug_logger import DebugLogger
-from ai.pipeline.stages._helpers import _refresh_sharpness
 from ai.pipeline.stages.preprocess_stages import PreprocessStagesMixin
 from ai.pipeline.stages.damage_stages import DamageStagesMixin
 from ai.pipeline.stages.color_stages import ColorStagesMixin
@@ -234,10 +232,6 @@ class RestorationPipeline(
         """Return whether DDColor colorization model is fully loaded."""
         return self._colorizer_ready.is_set() and self.colorizer.is_loaded
 
-    def is_ready(self) -> bool:
-        """Return whether fast model set is loaded."""
-        return self._models_ready.is_set()
-
     # ── Device management (U-5 / plan 3.3) ────────────────────────────────
     def _reload_models_on(self, device: str) -> None:
         """Synchronously (re)load every model onto `device`.
@@ -308,10 +302,6 @@ class RestorationPipeline(
         )
         self._reload_models_on(pref)
         return self._device
-
-    def _wait_for_models(self, timeout: float = 300.0) -> bool:
-        """Wait for background model loading threads to complete."""
-        return self._models_ready.wait(timeout=timeout)
 
     # ── Stage Implementations (0 to 10b) ──────────────────────────────────────
 
@@ -394,6 +384,21 @@ class RestorationPipeline(
 
         # Auto-detect and crop scanner framing margins / solid canvas borders
         img_rgb, has_border, border_bbox = ImageNormalizer.detect_and_crop_borders(img_rgb)
+
+        # J-6 (2026-10-12 forensic pass): ragged-border fallback. The uniform
+        # crop above only catches clean white/black mats; damaged scans carry
+        # flake-textured cream margins (std >> 6) that survived to the output
+        # and were then inpainted around all pipeline long. When the uniform
+        # gate misses but damaged ragged strips run the full frame height/
+        # width, crop to their inner edge so LaMa never sees border damage.
+        if not has_border:
+            try:
+                img_rgb, ragged_hit, ragged_bbox = ImageNormalizer.detect_ragged_borders(img_rgb)
+                if ragged_hit:
+                    has_border, border_bbox = True, ragged_bbox
+                    logger.info("J-6 ragged border crop applied: %s", ragged_bbox)
+            except Exception as exc:
+                logger.warning("J-6 ragged border check failed (non-fatal): %s", exc)
 
         # -- T-5: Flat-field illumination (registry stage 'flat_field') --------
         # Runs AFTER the border crop and still pre-context: a solid dark photo
@@ -555,6 +560,74 @@ class RestorationPipeline(
         # -- Stage 3b: Post-Inpaint Face Re-Detection ------------------------------
         faces = self._stage_3b_refresh_faces(context, faces, on_progress)
 
+        # -- Stage 4b: Inline NoiseRouter (N4, re-audit 2026-09-30) ----------------
+        # Runs BEFORE registry Stage 5 by design: the router's noise families
+        # were calibrated on the pre-Stage-5 canvas (the 04b dump), and Stage
+        # 5's h_bg=11.0 background NLM flattens the grain floor first, which
+        # left the V0.1 grain_floor_nlm reducer dead code in the live path
+        # (04b dump classified grain_floor at mad 3.38; the 05 dump was quiet
+        # at 1.58). Gate on the same flag Stage 5's route gate reads.
+        if run_denoise:
+            try:
+                from ai.postprocessing.noise_router import NoiseRouter
+                noise_profile = NoiseRouter.analyze(context)
+                if noise_profile.has_noise:
+                    # G2 contour guard: capture pre-4b edges; the NLM reducers
+                    # (grain_floor h~6, deblock) measurably eat low-contrast
+                    # structure along with grain (teared.jpg jaw band 78->59).
+                    _pre_4b = context.working_image.copy()
+                    NoiseRouter.reduce(context, noise_profile)
+                    context.add_log(
+                        f"Stage 4b NoiseRouter: applied filter(s) for "
+                        f"{', '.join(noise_profile.detected_types[:3])}."
+                    )
+                    if os.environ.get("PIXREVIVE_STRUCTURE_GUARD", "1").strip().lower() not in ("0", "false", "no", "off"):
+                        try:
+                            _g0 = cv2.cvtColor(_pre_4b, cv2.COLOR_RGB2GRAY).astype(np.float32)
+                            _g1 = cv2.cvtColor(context.working_image, cv2.COLOR_RGB2GRAY).astype(np.float32)
+                            _e0 = np.sqrt(cv2.Sobel(_g0, cv2.CV_32F, 1, 0, 3) ** 2 + cv2.Sobel(_g0, cv2.CV_32F, 0, 1, 3) ** 2)
+                            _e1 = np.sqrt(cv2.Sobel(_g1, cv2.CV_32F, 1, 0, 3) ** 2 + cv2.Sobel(_g1, cv2.CV_32F, 0, 1, 3) ** 2)
+                            # Coherence gate: protect only ORIENTED structure
+                            # (plain magnitude protected the grain too).
+                            from ai.analysis.structure import structure_gate as _sgate
+                            _sg = _sgate(_g0)
+                            _strong = _sg > 0.25
+                            # Face zones are excluded: their noise is removed
+                            # deliberately (grain destroys eyes) and GFPGAN
+                            # rebuilds facial detail in Stage 7. Re-injecting
+                            # pre-4b HF there re-noises the eyes (measured:
+                            # eye_sharp 0.90 -> 0.21 with faces included).
+                            _face_excl = np.zeros(_e0.shape, dtype=np.uint8)
+                            for _f in (context.image_metadata.get("faces") or []):
+                                _bb = _f.get("bbox")
+                                if _bb and len(_bb) >= 4:
+                                    _x0, _y0, _x1, _y1 = [int(v) for v in _bb[:4]]
+                                    _pad = int(0.15 * max(_x1 - _x0, _y1 - _y0))
+                                    _face_excl[max(0, _y0 - _pad):min(_e0.shape[0], _y1 + _pad),
+                                               max(0, _x0 - _pad):min(_e0.shape[1], _x1 + _pad)] = 1
+                            _strong &= (_face_excl == 0)
+                            if _strong.any():
+                                _ratio = float(np.mean(_e1[_strong])) / max(float(np.mean(_e0[_strong])), 1e-6)
+                                context.image_metadata["contour_retention_4b"] = round(_ratio, 3)
+                                if _ratio < 0.75:
+                                    _lab0 = cv2.cvtColor(_pre_4b, cv2.COLOR_RGB2LAB).astype(np.float32)
+                                    _lab1 = cv2.cvtColor(context.working_image, cv2.COLOR_RGB2LAB).astype(np.float32)
+                                    _hp = _lab0[:, :, 0] - cv2.GaussianBlur(_lab0[:, :, 0], (0, 0), sigmaX=1.0)
+                                    _w = _sg * float(np.clip((0.75 - _ratio) / 0.4, 0.0, 0.7))
+                                    _w *= (_face_excl == 0)
+                                    _lab1[:, :, 0] = np.clip(_lab1[:, :, 0] + _w * _hp, 0, 255)
+                                    context.working_image = cv2.cvtColor(_lab1.astype(np.uint8), cv2.COLOR_LAB2RGB)
+                                    context.add_log(
+                                        f"G2 contour guard (4b): edge energy retained {_ratio:.2f}x — "
+                                        "structure high-frequencies blended back (faces excluded)."
+                                    )
+                        except Exception as cg_exc:
+                            context.add_log(f"G2 contour guard (4b) failed: {cg_exc}")
+                else:
+                    context.add_log("Stage 4b NoiseRouter: no actionable noise detected.")
+            except Exception as exc:
+                context.add_log(f"Stage 4b NoiseRouter failed: {exc}")
+
         # ========================================================================
         # Registry-driven stage dispatch (A-2).
         # Linear, flag-gated stages iterate STAGE_REGISTRY: each StageSpec
@@ -624,21 +697,10 @@ class RestorationPipeline(
             method(context, on_progress=on_progress)
 
             # -- inline composition that belongs to a specific stage -----------
-            if spec.id == "denoise":
-                try:
-                    from ai.postprocessing.noise_router import NoiseRouter
-                    noise_profile = NoiseRouter.analyze(context)
-                    if noise_profile.has_noise:
-                        NoiseRouter.reduce(context, noise_profile)
-                        context.add_log(
-                            f"Stage 4b NoiseRouter: applied filter(s) for "
-                            f"{', '.join(noise_profile.detected_types[:3])}."
-                        )
-                    else:
-                        context.add_log("Stage 4b NoiseRouter: no actionable noise detected.")
-                except Exception as exc:
-                    context.add_log(f"Stage 4b NoiseRouter failed: {exc}")
-            elif spec.id == "colorize":
+            # (Stage 4b NoiseRouter moved above the registry loop — N4: when it
+            # ran here, after Stage 5, the h_bg NLM had already flattened the
+            # grain floor the router's classifier needs to see.)
+            if spec.id == "colorize":
                 _was_colorized = context.image_metadata.get("color_type", "color") in (
                     "grayscale", "sepia"
                 )
@@ -665,6 +727,7 @@ class RestorationPipeline(
                         context.add_log(f"Stage 9b Harmonizer failed: {exc}")
 
         # -- Post-SR Deferred Face Restoration (9c) ------------------------------
+        _ran_deferred_face = False
         if run_face and context.pipeline_flags.get("face_restore_deferred_to_post_sr", False):
             context.pipeline_flags["face_restore_deferred_to_post_sr"] = False
             context.pipeline_flags["_running_deferred_face_restore"] = True
@@ -673,6 +736,30 @@ class RestorationPipeline(
                 context.add_log("Stage 9c Post-SR FaceRestoration: Executed deferred face restoration on super-resolved canvas.")
             finally:
                 context.pipeline_flags["_running_deferred_face_restore"] = False
+            _ran_deferred_face = True
+
+        # -- 9d Post-SR cast/tone cleanup -----------------------------------------
+        # GFPGAN's paste-back re-injects the segia/watercolor cast it was fed
+        # on colorized images, and the earlier Stage 6c pass ran at pre-SR
+        # resolution — its global-cast estimate no longer matches the 4x
+        # canvas. Re-run the reducer ONCE after the deferred face pass so the
+        # global cast is re-estimated on the final pixels. Gated to images
+        # that were colorized (the only case where the damping matters)
+        # PIXREVIVE_POST_SR_CAST=0 reverts.
+        if (
+            _ran_deferred_face
+            and run_colorize_flag
+            and context.image_metadata.get("color_type", "color") in ("grayscale", "sepia")
+            and os.environ.get("PIXREVIVE_POST_SR_CAST", "1").strip().lower() not in ("0", "false", "no", "off")
+        ):
+            try:
+                refined9d = ColorArtifactReducer.reduce_artifacts(
+                    context.working_image, context=context
+                )
+                context.working_image = refined9d
+                context.add_log("Stage 9d ColorArtifactReducer: cast/tone re-estimated post-SR after deferred face pass.")
+            except Exception as exc:
+                context.add_log(f"Stage 9d ColorArtifactReducer (post-SR) failed: {exc}")
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -690,9 +777,9 @@ class RestorationPipeline(
         DebugLogger.save_debug_images(context)
 
         # Plan 5.3 (default=wire): IdentityValidator runs as a debug-only,
-        # advisory post-SR check — it never rolls the canvas back (that
-        # failure mode is documented in docs/restoration_debug_plan.md §9);
-        # it only feeds an identity-risk flag into the Restoration Report.
+        # advisory post-SR check — it never rolls the canvas back (the historical
+        # rollback failure mode is why); it only feeds an identity-risk flag into
+        # the Restoration Report.
         if os.getenv("PIXREVIVE_DEBUG", "").strip() in ("1", "true", "True"):
             try:
                 from ai.validation.identity_validator import IdentityValidator
