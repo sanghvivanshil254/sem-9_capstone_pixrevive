@@ -56,36 +56,38 @@ Seven new env flags (`PIXREVIVE_DDCOLOR_LONLY`, `_MS_FLAKES`, `_NLM_CAP`, `_RAGG
 
 Weights chosen for this problem class — **(a) visual damage 0.35** (this is a consumer-facing restoration product; visible artifacts are what the user sees), **(b) frequency across fixtures 0.25** (a bug that hits every scan is worse than a one-off), **(c) blast radius 0.25** (downstream stages inherit upstream errors multiplicatively, not additively), **(d) identity/trust risk 0.15** (settlement matters for vintage portraits: a family will not tolerate a wrong face). Each issue scores 1–5 on each axis; Severity = Σ(weight × axis).
 
-| # | Issue | Codes | (a) | (b) | (c) | (d) | Σ (Σ·5=severity 25-max) |
-|--|--|--|--|--|--|--|--|
-| 1 | Whole-frame mustard/olive C-CAST | C-CAST, C-INC, C-SEM | 5 | 3 | 5 | 2 | **4.25 → 21.3/25** |
-| 2 | Large flake blobs survive → LaMa cream fill | R-DMG | 5 | 4 | 4 | 1 | **4.00 → 20.0/25** |
-| 3 | Surviving flakes amplified by SR+sharpen | R-SR, R-SHP | 4 | 4 | 3 | 1 | **3.20 → 16.0/25** |
-| 4 | Ragged cream borders survive | R-DMG | 4 | 4 | 3 | 0 | **3.00 → 15.0/25 issue 3** |
-| 5 | Waxy skin / lost stubble/fabric | R-OVS | 4 | 4 | 3 | 1 | **3.15 → 15.8/25 (issue 4)** |
-| 6 | Iris/lip chroma post-GFPGAN | C-INC, C-SEM | 3 | 3 | 2 | 2 | **2.45 → 12.3/25** |
-| 7 | Chroma snapped to ragged L edges | C-BLEED | 3 | 3 | 2 | 0 | **2.10 → 10.5/25** |
-| 8 | Hair scratch lines survive | R-DMG | 2 | 2 | 2 | 0 | **1.35 → 6.8/25** |
-| 9 | Greyscale-skip / border-strip risks (image3, Lena) | OTHER | ? | 2 | 2 | 1 | unrated 1/25 until an output exists |
-| 10 | Test infra gaps | — | 0 | 5 | 5 | 1 | 3.75/25 (infrastructure, not user-facing) |
-| 11 | Unverified shipped-claim risk (0.2 above) | — | 0 | 4 | 4 | 2 | 3.5/25 (process risk) |
+Severity formula: Σ = 0.35a + 0.25b + 0.25c + 0.15d (raw 0–5 scale); /25 = Σ×5. All rows recomputed 2026-10-12 (corrected by Phase 0 proofread — the pre-proofread table carries arithmetic slips):
 
-### 1.2 Pure severity order
+| # | Issue | Codes | (a) | (b) | (c) | (d) | Σ (raw) | /25 |
+|--|--|--|--|--|--|--|--|--|
+| 1 | Whole-frame mustard/olive C-CAST | C-CAST, C-INC, C-SEM | 5 | 3 | 5 | 2 | 3.95 | **19.8** |
+| 2 | Large flake blobs survive → LaMa cream fill | R-DMG | 5 | 4 | 4 | 1 | 3.90 | **19.5** |
+| 3 | Surviving flakes amplified by SR+sharpen | R-SR, R-SHP | 4 | 4 | 3 | 1 | 3.20 | **16.0** |
+| 4 | Ragged cream borders survive | R-DMG | 4 | 4 | 3 | 0 | 3.05 | **15.3** |
+| 5 | Waxy skin / lost stubble/fabric | R-OVS | 4 | 4 | 3 | 1 | 3.20 | **16.0** |
+| 6 | Iris/lip chroma post-GFPGAN | C-INC, C-SEM | 3 | 3 | 2 | 2 | 2.50 | **12.5** |
+| 7 | Chroma snapped to ragged L edges | C-BLEED | 3 | 3 | 2 | 0 | 2.10 | **10.5** |
+| 8 | Hair scratch lines survive | R-DMG | 2 | 2 | 2 | 0 | 1.35 | **6.8** |
+| 9 | Greyscale-skip / border-strip risks (image3, Lena) | OTHER | ? | 2 | 2 | 1 | ≤2.35 | **≤11.8** (unrated until an output exists) |
+| 10 | Test infra gaps | — | 0 | 5 | 5 | 1 | 3.75 | **18.8** (infra, not user-facing) |
+| 11 | Unverified shipped-claim risk (§0.2) | — | 0 | 4 | 4 | 2 | 3.50 | **17.5** (process risk) |
 
-1. C-CAST (21.3)
-2. R-DMG flake blobs (20.0)
-3. R-OVS waxy skin (15.8)
-4. Ragged borders (15.0)
-5. Flakes amplified by SR+sharpen (16.0 — ranks between 2 and 3 by score, but see dependency note)
-6. Iris/lip chroma (12.3)
-7. C-BLEED (10.5)
-8. Hair scratches (6.8)
-9. Greyscale/fixture risk (1.0)
-10. Test infra + commit hygiene (process)
+### 1.2 Pure severity order (recomputed, ties broken by blast radius) — corrected
+
+1. Test infra + commit hygiene (18.8 / 17.5 — process prerequisites, still first)
+2. C-CAST (19.8)
+3. R-DMG flake blobs (19.5)
+4. SR+sharpen amplification (16.0) — tie with R-OVS at 16.0; SR amplification wins the tie-break because it *creates* new crisp artifacts (worse per-pixel), while R-OVS only loses detail
+5. R-OVS waxy skin (16.0)
+6. Ragged borders (15.3)
+7. Iris/lip chroma (12.5)
+8. C-BLEED (10.5)
+9. Greyscale/fixture risk (≤11.8, unrated)
+10. Hair scratches (6.8)
 
 ### 1.3 Dependency graph
 
-- **H0 COMIT-HYGIENE → everything:** the current fixes are uncommitted; Phase 0 must first pin a clean commit hash so every later diff is meaningful. `COMMIT HYGIENE` gates ALL fix cards.
+- **H0 COMMIT-HYGIENE → everything:** COMPLETED as Phase 0 (commits `ecbd259`, `f39d1e5`, `7bbee8b`, `87863bb` on main, all under the restored working tree; backup branch `backup/pre-remediation-2026-10-12` + full-tree patch saved OUTSIDE the repo). COMMIT HYGIENE gates ALL fix cards.
 - **FIX-CAST (DDColor input prep) → FIX-FLAKE baked-in stain inherited:** the cast strictly comes from surviving flakes/LaMa fill — but the cast fix also *changes what DDColor sees*, so it must come (a) after the flake fix so flake removal is measured on a system whose colorizer already produces honest chroma, AND (b) before any SR/sharpen stage fix, since SR amplifies whatever chroma exists at the time.
 - **FIX-FLAKE + FIX-BORDER both precede FIX-AMPLIFY (SR amplification)**: SR will amplify the residual flakes/borders from H2/H3-H4, so both upstream fixes must be in place BEFORE measuring SR amplification; otherwise FIX-AMPLIFY fails its acceptance test falsely.
 - **FIX-WAXY (NLM cap + grain reinject) can run in either order relative to flake/border fixes** — they touch different stages, but grain re-injection competes with the flake detector for what "flat" means. Safer sequence: grain re-inject AFTER flake fix, since adequate flake removal means fewer "flat" false-positives to over-inject.
@@ -101,7 +103,7 @@ Weights chosen for this problem class — **(a) visual damage 0.35** (this is a 
 | P0 | **Baseline & harness** (§2) | All gates depend on a recorded baseline |
 | 1 | **FIX 1 — Flake-blob detection** (R-DMG, sev 20.0) | promoted above C-CAST: C-CAST is *caused by* surviving flakes; fixing flakes first removes the largest confound from the cast measurement |
 | 2 | **FIX 2 — Ragged-border crop** (sev 15.0) | pairs with FIX 1: both are pre-inpaint gates; measuring either in isolation leaves the other as a confound |
-| 3 | **FIX 3 — C-CAST root cause + cast validator** (sev 21.3) | demoted from rank 1 only because its own acceptance test requires a de-flaked, de-borderd canvas; colase colorizer changes otherwise confounded |
+| 3 | **FIX 3 — C-CAST root cause + cast validator** (sev 19.8, top non-process) | demoted from rank 1 only because its acceptance test requires a de-flaked, de-bordered canvas; otherwise the colorizer's chroma measurement stays confounded |
 | 4 | **FIX 4 — Waxy skin (NLM cap + grain re-inject)** (sev 15.8) | after flake: grain re-injection must not paint over the flakes we just removed |
 | 5 | **FIX 5 — Surviving-flake SR/sharpen amplification** (sev 16.0) | depends on FIX 1–3: only then is a clean canvas available to measure SR amplification honestly |
 | 6 | **FIX 6 — Iris/lip chroma post-GFPGAN** (sev 12.3) | depends on FIX 3 (the colour DDColor produces changes what the nudger should do) |
@@ -123,7 +125,7 @@ Weights chosen for this problem class — **(a) visual damage 0.35** (this is a 
 | `SigShrink-Lena` figure | border/grey-skip fixture | baked white right-edge strip | colorizer (grayscale skip), denoise-first (already denoised) |
 | `case1_noisy_lena.jpg` (ASSUMED — in dataset per codebase map; verify presence) | speckle-path fixture | genuine speckle field | — |
 | **NEW: `fixture_clean_photo.png`** | false-positive control | (none) | any mask, any border crop, any grain re-inject visible in flat zones |
-| **NEW: `fixture_colour_photo.png`** | colorizer-should-skip or no-recolor control | (none — already colour) | any recolorization of a well-coloured photo; any chroma抹 over-boost |
+| **NEW: `fixture_colour_photo.png`** | colorizer-should-skip or no-recolor control | (none — already colour) | any recolorization of a well-coloured photo; any chroma over-boost |
 
 Both new fixtures are synthesized (small, scripted) — they exist to catch the *pipeline firing where it must not*; no existing fixture currently covers this.
 
@@ -153,7 +155,7 @@ For each fixture output, computes and writes `metrics_<fixture>.json`:
 
 | Metric | Definition | ROI |
 |--|--|--|
-| cast | mean a*, mean b*, hue angle atan2(b,a) of skin ROI | [225,255,523,591] (0-1000 normalized on 1932-equivalent) |
+| cast | mean a*, mean b*, hue angle atan2(b,a) of skin ROI | [225,255,523,591] 0-1000 normalized — chosen as the tighter face-band complement of the audit's face ROI [176,357,595,699]; the wider audit ROI is retained in the isolation test |
 | inter-iris Δab | \|ab_left − ab_right\| L2 | left [316,440,352,507], right [321,600,352,668] |
 | lip-vs-cheek a* ↓ | cheek a* minus lip a* | lip [484,487,523,621], cheek ring around it |
 | flake-blob count | connected components of (L > local-mean + 22) with area > 100px² | whole frame + 3 had-bug ROIs |
@@ -187,7 +189,7 @@ Run `compute_fixture_metrics.py` against the **current** outputs (teared output 
 
 ### **FIX 1 — Multi-scale flake detection tuned on street-level flake loads** | R-DMG | Severity 20.0/25 | teared (worst), image1, image3
 
-1. **Problem:** OBSERVED (audit, teared output): 19 surviving cream/flake blob regions; worst [16,787,274,921] and [430,792,569,911] (background), [337,383,399,445] (face), [569,383,688,518] (neck/collar), [688,207,771,373] (shirt); face flake ROI [383,336,445,398] visibly bright cream in the output. INFERRED: `detect_white_flakes` single-scale local-contrast with a `max_flake_size` upper cap misses the 40–400px class.
+1. **Problem:** OBSERVED (audit, teared output): 19 surviving cream/flake blob regions; worst [16,787,274,921] and [430,792,569,911] (background), [337,383,399,445] (face), [569,383,688,518] (neck/collar), [688,207,771,373] (shirt); face flake ROI [383,336,445,398] visibly bright cream in the output. Phase 0 CONFIRMATION (flags-OFF run): 125 residual flake blobs all-frame with 15 in bg-right ROI; flags-ON run does NOT clear them (144 blobs, 18 in bg-right) — the multi-scale detector as shipped does NOT yet fix the audit's blob class. INFERRED (refined by Phase 0): `detect_white_flakes` catches threshold-level bleaching but the 40–400px LaMa-fill class survives under both flag settings.
 
 2. **Hypotheses:**
    - PRIMARY: detection miss — the multi-scale path (`PIXREVIVE_MS_FLAKES`) exists in the tree but either (i) is not actually reachable in `detect_white_flakes` (wired to a dead code path), (ii) fires but its masks are not OR-ed into the fracture mask that feeds LaMa, or (iii) fires but its size band / threshold parameters are mis-tuned for 40–400px blobs where halftone dot texture also lives.
@@ -302,7 +304,7 @@ Run `compute_fixture_metrics.py` against the **current** outputs (teared output 
 7. **Acceptance criteria (teared.jpg):**
    - skin ROI a* ∈ [6,20] AND b* ∈ [12,32] (warm skin, not sunburnt, not grey).
    - face-vs-background b* separation ≥ 10 units.
-   - near-neutral pixel share ≥ 15% (bg paper must be near-neutral; INFERRED welcome range 30–60%; threshold tuned on real data if needed).
+   - near-neutral pixel share ≥ 15% — DATA-DRIVEN UPDATE (Phase 0, step 4): measured baseline is ~3.6–4.5% on teared output at both flag settings and ~19–25% on image1/image3, so the previously INFERRED 30–60% band is unreachable for this fixture family; the target floor stays ≥ 15% (reached when the paper margin is properly neutralized after de-flaking) but 30–60% is recorded as a non-goal for vintage sepia sources whose paper warmth legitimately carries chroma.
    - colourfulness metric ≥ 0.8× of the audit output (colour must NOT collapse).
    - `fixture_colour_photo.png` must-not-change: mean a*/b* shift ≤ 3 units after (colour photos must not be re-tinted).
    - SigShrink-Lena (grayscale): colorizer skipped (`_gray_skip_warranted`); a near-black-white output.
@@ -353,7 +355,7 @@ Run `compute_fixture_metrics.py` against the **current** outputs (teared output 
 
 9. **Rollback:** `PIXREVIVE_NLM_CAP=0` (uncapped legacy) + `PIXREVIVE_GRAIN=0` (no injection).
 
-10. **Dependencies:** after FIX 1 (grain must not paint over surviving flakes); independent of FIX 2/3 ordering; must precede FIX 5 (SR amplification measurement needs the flattening honoureded).
+10. **Dependencies:** after FIX 1 (grain must not paint over surviving flakes); independent of FIX 2/3 ordering; must precede FIX 5 (SR amplification measurement needs the flattening honored first).
 
 11. **Effort:** M–L, 8–14h (cap verification + grain amplitude tuning + tests). **Confidence:** medium-high.
 
@@ -371,7 +373,7 @@ Run `compute_fixture_metrics.py` against the **current** outputs (teared output 
 
 3. **FALSIFICATION TEST:** take the FIX 1..4-clean teared run:
    - **TRUE:** flake-blob count in the final output returned to non-zero => a sweep pass between colorize/SR is warranted; the existing `PIXREVIVE_SPECK_SWEEP` (Stage 10 pre-sharpen, exists in tree) may not be engaged/adequate for the 40–400px class.
-   - **FALSE:** post-fix the blob count is 0 => FIX 1–4 did the whole job, and FIX 5's only remaining work is the "ssweep engage/adequacy" audit; shrink scope accordingly.
+   - **FALSE:** post-fix the blob count is 0 => FIX 1–4 did the whole job, and FIX 5's only remaining work is the "sweep engage/adequacy" audit; shrink scope accordingly.
 
 4. **Proposed change:** `backend/ai/pipeline/stages/finish_stages.py` Stage 10 —
    - raise `PIXREVIVE_SPECK_SWEEP`'s speck cap to include the 40–400px *blob class* (currently keyed for 1–24px specks per its own guard); size band genuinely from fixture data: measure one blob's px area at 1932 on the teared input (ASSUMED parameter name `speck_cap` — verify in code).
@@ -453,7 +455,7 @@ Run `compute_fixture_metrics.py` against the **current** outputs (teared output 
 
 5. **Alternatives rejected:** replacing guidedFilter with a joint bilateral (same class); disabling ColorDiffusion altogether (regresses the inpaint-zone chroma diffusion, unmeasured cost).
 
-6. **Tests to add:** compare hue-histogram entropy pre/post on a synthetic ragged-edge stub (rasterized国旗-free, purely synthetic L-ragged edges + surrounding flat chroma).
+6. **Tests to add:** compare hue-histogram entropy pre/post on a synthetic ragged-edge stub (purely synthetic L-ragged edges + surrounding flat chroma; no rasterization dependencies).
 
 7. **Acceptance criteria (teared):**
    - hue-entropy metric (or Visible-posterisation metric) on [31,295,362,725] improves by ≥ 30% vs the legacy-guide run.
@@ -611,7 +613,7 @@ Ordered by how much each unblocks:
 3. **The raw DDColor pre-ColorDiffusion intermediate dump** (`06a_raw_ddcolor`) — needed for FIX 3's cast falsification *if* the harness extension is not in place yet.
 4. **The damage-mask overlay artifact for teared.jpg pre-LaMa** — needed for FIX 1's falsification if the harness dump is not wired yet.
 5. **GPU/CLIP/ArcFace decision:** whether ArcFace w600k weights can be fetched (`scripts/fetch_faceid_weights.py` exists in the repo per file references, ASSUMED) — this decides whether identity is metric-backed or human-check-backed in the acceptance criteria.
-6. **A green-light on fixing policy for `image3`'s tear** — accept that the identity-similarity guard is a "revert-inpaint, log, still-deliver" and the missing thi should ship with `inpaint_face_geometry_guard_triggered` metadat flagged in the response to the caller; or specify a different policy.
+6. **A green-light on fixing policy for `image3`'s tear** — accept that the identity-similarity guard is a "revert-inpaint, log, still-deliver" and the output should ship with `inpaint_face_geometry_guard_triggered` metadata flagged in the response to the caller; or specify a different policy.
 7. **Confirmation of the exact fixture demonstrator I should use for `fixture_colour_photo.png`** — any well-coloured portrait you own; a synthetic will do but a real one is stricter.
 
 ---

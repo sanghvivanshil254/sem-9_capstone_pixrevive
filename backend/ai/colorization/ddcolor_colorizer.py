@@ -393,6 +393,14 @@ class DDColorColorizer:
             # (measured on teared.jpg) a single gold-brown cast. Dial the
             # chroma back: opacity x0.65 and a tighter saturation ceiling.
             # PIXREVIVE_CHROMA_DISCIPLINE=0 reverts.
+            # Phase-0 bugfix (2026-10-12): eff_opacity was referenced without
+            # ever being assigned when CHROMA_DISCIPLINE was OFF — the marsh
+            # path crashed with UnboundLocalError at _blend_chroma. Always
+            # seed from the module default first.
+            eff_opacity = _COLOR_OPACITY
+            _sepia_source = (context.image_metadata or {}).get("color_type") in (
+                "sepia", "faded", "yellowed"
+            )
             if (os.getenv("PIXREVIVE_CHROMA_DISCIPLINE", "1").strip().lower()
                     not in ("0", "false", "no", "off")) and _sepia_source:
                 eff_opacity = eff_opacity * 0.65
