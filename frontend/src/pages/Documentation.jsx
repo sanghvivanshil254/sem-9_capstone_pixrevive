@@ -1,5 +1,17 @@
-import { ArrowLeft, Cpu, Layers, Workflow, CheckCircle, BookOpen } from 'lucide-react';
+import { ArrowLeft, Cpu, Layers, Workflow, CheckCircle, BookOpen, ShieldCheck } from 'lucide-react';
 import { Link } from 'react-router-dom';
+
+const STAGES = [
+  ['0', 'Impulse & speck suppression', 'ROAD filter + speck-field suppressor remove dust, pinholes and dense low-amplitude specks before any detector can mistake them for emulsion flakes.'],
+  ['1', 'Degradation analysis', 'QualityAnalyzer measures blur, noise σ, damage % and color mode (grayscale / sepia / color) to route the image.'],
+  ['2', 'Multi-scale fracture masking', 'U-Net defect segmenter, classical scratch/flake/tear detectors and the foxing dark-spot detector are fused and refined into the damage mask.'],
+  ['3', 'LaMa deep inpainting', 'Big-LaMa fills the damage mask; seams are feathered and a face-wipeout circuit breaker aborts inpaints that would erase anatomy.'],
+  ['5', 'Spatially-gated denoising', 'Three-zone NLM (face / subject / background) scaled to the measured noise floor, preserving facial anatomy.'],
+  ['6', 'DDColor colorization', 'DDColor (ICCV 2023) adds realistic chrominance; ambient color diffuses smoothly across inpaint zones.'],
+  ['7', 'GFPGAN face restoration', 'GFPGAN v1.4 blends every detected face with damage-aware compositing; small faces defer until after upscaling.'],
+  ['9', 'Real-ESRGAN ×4 upscale', 'Tiled Real-ESRGAN x4plus super-resolution with inpaint-seam harmonization, capped at 4096 px.'],
+  ['10', 'Sharpen & grade', 'Luminance-only LAB unsharp masking, then exhibition CLAHE + shadow-lifting tone curve.'],
+];
 
 export default function Documentation() {
   return (
@@ -28,145 +40,150 @@ export default function Documentation() {
         </h2>
         <div className="cream-card p-6 mb-6">
           <p className="text-stone-700 leading-relaxed mb-4">
-            PixRevive operates as a dual-network sequential engine. When an image is submitted, it passes through two primary stages: 
-            <strong> Phase 1: Spatial & Luminance Restoration</strong> followed by <strong>Phase 2: Chromatic Colorization</strong>.
+            PixRevive runs a <strong>14-stage ordered pipeline</strong>. The ordering is the product:
+            damage is repaired <em>before</em> colorization (DDColor would otherwise colorize bright scratch
+            pixels with wrong hues), and impulse noise is suppressed <em>before</em> damage detection
+            (specks are indistinguishable from emulsion flakes once they reach the detectors).
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-8">
             <div className="bg-stone-50 border border-stone-200 rounded-lg p-5">
-              <span className="text-xs bg-indigo-100 border border-indigo-200 text-indigo-700 font-mono px-2 py-0.5 rounded uppercase font-semibold">Phase 1</span>
-              <h3 className="font-serif text-lg text-stone-800 mt-2 mb-1.5">Real-ESRGAN Restorer</h3>
+              <span className="text-xs bg-indigo-100 border border-indigo-200 text-indigo-700 font-mono px-2 py-0.5 rounded uppercase font-semibold">Repair</span>
+              <h3 className="font-serif text-lg text-stone-800 mt-2 mb-1.5">Damage-first structural repair</h3>
               <p className="text-xs text-stone-500 leading-relaxed">
-                Super-resolves and sharpens structural details using state-of-the-art Real-ESRGAN (4× RRDB network) on full RGB channels for maximum quality. Falls back to bicubic 2× upscaling if weights are missing. Eliminates scanner noise, grain, and digital artifacts.
+                Masking → LaMa inpainting → denoising, with retinal face detection protecting eyes and
+                mouths through every stage. Damaged B&amp;W photos are deliberately routed to repair
+                first, never straight to colorize.
               </p>
             </div>
             <div className="bg-stone-50 border border-stone-200 rounded-lg p-5">
-              <span className="text-xs bg-amber-100 border border-amber-200 text-amber-700 font-mono px-2 py-0.5 rounded uppercase font-semibold">Phase 2</span>
-              <h3 className="font-serif text-lg text-stone-800 mt-2 mb-1.5">ECCV16 Colorizer</h3>
+              <span className="text-xs bg-amber-100 border border-amber-200 text-amber-700 font-mono px-2 py-0.5 rounded uppercase font-semibold">Restore</span>
+              <h3 className="font-serif text-lg text-stone-800 mt-2 mb-1.5">Colorize, face-restore, upscale</h3>
               <p className="text-xs text-stone-500 leading-relaxed">
-                Maps lightness values to predicted chromatic ranges, introducing realistic colorization based on deep contextual priors.
+                Only on a clean canvas does DDColor add color, GFPGAN rebuild facial detail, and
+                Real-ESRGAN perform the final 4× upscale with luminance-only sharpening.
               </p>
             </div>
           </div>
         </div>
       </section>
 
-      {/* Preprocessing Details */}
+      {/* Stage table */}
       <section className="mb-16">
         <h2 className="text-2xl font-serif text-stone-800 mb-6 flex items-center gap-2">
-          <Layers className="w-6 h-6 text-indigo-500" /> Phase 0.5: Vector-Guided Crack Removal
+          <Layers className="w-6 h-6 text-indigo-500" /> Stage-by-Stage
+        </h2>
+        <div className="space-y-3">
+          {STAGES.map(([id, title, body]) => (
+            <div key={id} className="bg-stone-50 border border-stone-200 rounded-lg p-4 flex gap-4">
+              <span className="text-xs bg-indigo-100 border border-indigo-200 text-indigo-700 font-mono px-2 py-0.5 rounded uppercase font-semibold shrink-0 h-fit">Stage {id}</span>
+              <div>
+                <h3 className="font-serif text-base text-stone-800 mb-1">{title}</h3>
+                <p className="text-xs text-stone-500 leading-relaxed">{body}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Damage masking details */}
+      <section className="mb-16">
+        <h2 className="text-2xl font-serif text-stone-800 mb-6 flex items-center gap-2">
+          <Layers className="w-6 h-6 text-indigo-500" /> Multi-Scale Damage Masking
         </h2>
         <div className="space-y-6">
           <p className="text-stone-700 leading-relaxed">
-            Heavily textured images (like those with canvas cracks or paint damage) overwhelm standard AI restorers. To solve this, PixRevive uses a hybrid mathematical approach: combining <strong>vector-style edge detection</strong> to protect structural outlines, and <strong>Navier-Stokes raster inpainting</strong> to melt away the cracks before the AI takes over.
+            A learned U-Net segmenter (CVPR 2020 semantic-defect weights) is the Stage 2 gatekeeper,
+            fused with classical detectors for scratches, white flakes, wide cracks, 3D paper tears,
+            tearmark emulsion flaking and foxing/mold dark spots. The fused mask is refined
+            (component filtering, hole closing, controlled dilation) and ocular/oral protection zones
+            carved out before inpainting.
           </p>
 
           <div className="bg-stone-900 border border-stone-800 text-stone-300 font-mono text-[11px] p-5 rounded-lg overflow-x-auto leading-relaxed shadow-inner">
-            <div className="text-indigo-400 mb-2"># Vector/Raster Crack Inpainting</div>
-            <div className="text-amber-400 mt-1"># 1. Isolate cracks (Blackhat) and Vector Outlines (Canny)</div>
-            <div>blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, kernel)</div>
-            <div>edges = cv2.Canny(cv2.GaussianBlur(gray, (5, 5), 0), 50, 150)</div>
-            <div className="text-amber-400 mt-2"># 2. Subtract protected edges from the crack mask</div>
-            <div>crack_mask = cv2.bitwise_and(crack_mask, cv2.bitwise_not(edges))</div>
-            <div className="text-amber-400 mt-2"># 3. Navier-Stokes fluid dynamics inpainting (Raster)</div>
-            <div>img_clean = cv2.inpaint(img_np, crack_mask, 3, cv2.INPAINT_NS)</div>
+            <div className="text-indigo-400 mb-2"># Fused damage mask (simplified)</div>
+            <div>mask = unet_segmenter(img) | classical_scratches | white_flakes | tearmarks | foxing_spots</div>
+            <div className="text-amber-400 mt-2"># protect anatomy before any pixel is touched</div>
+            <div>mask &= ~protect_face_zones(face_landmarks)</div>
+            <div className="text-amber-400 mt-2"># Big-LaMa infills only masked pixels; clean pixels are bytewise preserved</div>
+            <div>result = lama_inpaint(img, mask)</div>
           </div>
         </div>
       </section>
 
-      {/* Real-ESRGAN Restorer Details */}
+      {/* Face pipeline details */}
       <section className="mb-16">
         <h2 className="text-2xl font-serif text-stone-800 mb-6 flex items-center gap-2">
-          <Cpu className="w-6 h-6 text-indigo-500" /> Phase 1: Real-ESRGAN Restorer
+          <Cpu className="w-6 h-6 text-indigo-500" /> Face-Aware Restoration
         </h2>
         <div className="space-y-6">
           <p className="text-stone-700 leading-relaxed">
-            Once the structural cracks are inpainted, the image is passed to the state-of-the-art <strong>Real-ESRGAN (RRDBNet)</strong> architecture for unparalleled artifact removal and face restoration on the full RGB image.
+            RetinaFace + Haar cascades detect <strong>all faces</strong> with 5-point landmarks — once
+            early (to route and protect), once after inpainting (to re-cover faces the cracks hid).
+            GFPGAN v1.4 then restores each face with damage-aware blending, at fidelity 0.85, and
+            small (&lt;90 px) faces are deferred to a post-upscale pass so they are restored at 4×
+            resolution instead of being mangled early.
           </p>
 
-          <div className="bg-stone-900 border border-stone-800 text-stone-300 font-mono text-[11px] p-5 rounded-lg overflow-x-auto leading-relaxed shadow-inner">
-            <div className="text-indigo-400 mb-2"># Restoration Pipeline</div>
-            <div className="text-indigo-400 mt-1"># SOTA Real-ESRGAN Pipeline (Full RGB)</div>
-            <div className="text-amber-400">img_t = torch.Tensor(img_rgb).permute(2, 0, 1).unsqueeze(0) / 255.0</div>
-            <div>out_t = rrdbnet_model(img_t).clamp(0.0, 1.0)</div>
-          </div>
-
           <div className="cream-card p-6">
-            <h4 className="font-serif text-lg text-stone-800 mb-3">Key Design Advantages:</h4>
+            <h4 className="font-serif text-lg text-stone-800 mb-3">Key design guarantees:</h4>
             <ul className="space-y-2 text-sm text-stone-600">
               <li className="flex items-start gap-2">
                 <CheckCircle className="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" />
-                <strong>100% Offline Capability:</strong> The RRDBNet architecture is baked directly into the backend source code. This allows the system to load gigabyte-scale state-of-the-art weights locally without relying on any external packages like PyTorch Hub or HuggingFace during runtime.
+                <span><strong>Clean pixels are never touched:</strong> restoration is composited through the damage mask — original × (1−mask) + restored × mask.</span>
               </li>
               <li className="flex items-start gap-2">
                 <CheckCircle className="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" />
-                <strong>Uncompromising Quality:</strong> By processing all three color channels (RGB) simultaneously using deep residual dense blocks, it repairs severe artifacts and textures (like faces) far better than lightweight luminance-only models.
+                <span><strong>Identity is gated:</strong> YuNet + SFace cosine verification guards any generative re-imagination, rolling back to the LaMa canvas on failure.</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <CheckCircle className="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" />
+                <span><strong>Offline by design:</strong> all weights load from <code>backend/ai/weights/</code> — no hub downloads at runtime.</span>
               </li>
             </ul>
           </div>
         </div>
       </section>
 
-      {/* ECCV16 Colorizer Details */}
+      {/* Colorization details */}
       <section className="mb-16">
         <h2 className="text-2xl font-serif text-stone-800 mb-6 flex items-center gap-2">
-          <Layers className="w-6 h-6 text-amber-500" /> Phase 2: ECCV16 Colorizer
+          <Layers className="w-6 h-6 text-amber-500" /> DDColor Colorization
         </h2>
         <div className="space-y-6">
           <p className="text-stone-700 leading-relaxed">
-            The Colorizer implements the architecture proposed by Richard Zhang et al. in the ECCV 2016 paper <em>"Colorful Image Colorization"</em>. The model treats colorization as a classification problem, predicting a probability distribution over quantized color bins in the <strong>CIE LAB</strong> color space.
+            Colorization uses <strong>DDColor (ICCV 2023)</strong> on the fully repaired canvas. The
+            network predicts chrominance from deep dual-attention features, guided by the luminance
+            channel, and ambient color diffuses smoothly across inpainted zones. A post-pass reducer
+            fixes banding, rebalances saturation and repairs edge color-bleed; a hue-histogram guard
+            detects the single-hue wash failure mode and rolls back to L-preserved grayscale with
+            disclosure in the report.
           </p>
 
-          <div className="bg-stone-50 border border-stone-200 rounded-lg p-6">
-            <h3 className="font-serif text-stone-800 text-lg mb-3">How CIE LAB Processing Works:</h3>
-            <p className="text-sm text-stone-600 leading-relaxed mb-4">
-              Unlike the standard RGB color space, LAB separates lightness (<strong>L</strong>) from color information (<strong>a</strong> represents green-red balance, and <strong>b</strong> represents blue-yellow balance). 
-            </p>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-center mt-6">
-              <div className="bg-white border border-stone-200 rounded p-3">
-                <strong className="block text-stone-900 text-base">L Channel</strong>
-                <span className="text-[11px] text-stone-500">Lightness (0 to 100)<br />Input Grayscale Image</span>
-              </div>
-              <div className="bg-white border border-stone-200 rounded p-3">
-                <strong className="block text-stone-900 text-base">a Channel</strong>
-                <span className="text-[11px] text-stone-500">Predicted chrominance<br />Green vs Red axis</span>
-              </div>
-              <div className="bg-white border border-stone-200 rounded p-3">
-                <strong className="block text-stone-900 text-base">b Channel</strong>
-                <span className="text-[11px] text-stone-500">Predicted chrominance<br />Blue vs Yellow axis</span>
-              </div>
-            </div>
-          </div>
-
-          <h3 className="font-serif text-stone-800 text-xl mb-3">Processing Pipeline:</h3>
           <div className="bg-stone-900 border border-stone-800 text-stone-300 font-mono text-[11px] p-5 rounded-lg overflow-x-auto leading-relaxed shadow-inner">
-            <div className="text-indigo-400 mb-2"># 1. Convert source image to LAB space and resize input to model resolution (256x256)</div>
-            <div>img_lab = cv2.cvtColor(img_resized.astype("float32") / 255.0, cv2.COLOR_RGB2LAB)</div>
-            <div>L_channel = img_lab[:, :, 0]</div>
-            <div className="mt-2 text-indigo-400"># 2. Prepare tensor for ECCVGenerator network (shape: 1, 1, 256, 256)</div>
-            <div>L_tensor = torch.Tensor(L_channel).unsqueeze(0).unsqueeze(0).to(device)</div>
-            <div className="mt-2 text-indigo-400"># 3. Model forward pass outputs normalized ab channels [-1.0, 1.0]</div>
-            <div>ab_tensor = colorizer_model(L_tensor)</div>
-            <div className="mt-2 text-indigo-400"># 4. Unnormalize ab output by scaling factor (110.0) & resize back to source shape</div>
-            <div>ab_pred = ab_tensor.cpu().numpy()[0].transpose((1, 2, 0)) * 110.0</div>
-            <div>ab_pred_resized = cv2.resize(ab_pred, (w, h))</div>
-            <div className="mt-2 text-indigo-400"># 5. Concatenate original High-Res L channel with upscaled predicted ab channels</div>
-            <div>colorized_lab = np.concatenate((L_orig[:, :, np.newaxis], ab_pred_resized), axis=2)</div>
-            <div>colorized_rgb = cv2.cvtColor(colorized_lab, cv2.COLOR_LAB2RGB)</div>
+            <div className="text-indigo-400 mb-2"># Stage 6 (simplified)</div>
+            <div className="text-amber-400 mt-1"># 1. DDColor global transform at 512px input</div>
+            <div>colorized = ddcolor_colorizer.colorize(working_image)</div>
+            <div className="text-amber-400 mt-2"># 2. ambient chrominance diffusion across inpaint zones</div>
+            <div>colorized = diffuse_chroma(colorized, inpaint_mask)</div>
+            <div className="text-amber-400 mt-2"># 3. banding / saturation / bleed refinement</div>
+            <div>colorized = ColorArtifactReducer().refine(colorized)</div>
           </div>
+        </div>
+      </section>
 
-          <div className="cream-card p-6">
-            <h4 className="font-serif text-lg text-stone-800 mb-3">Core Algorithmic Fixes Implemented:</h4>
-            <ul className="space-y-2.5 text-sm text-stone-600">
-              <li className="flex items-start gap-2">
-                <CheckCircle className="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" />
-                <strong>Double Normalization Fix:</strong> The network's internal input normalization function <code>normalize_l()</code> automatically subtracts `50` and divides by `100` to convert the L range from `[0, 100]` to `[-0.5, 0.5]`. The external preprocessing layer was updated to prevent subtracting `50` twice, resolving the bias-shift bug.
-              </li>
-              <li className="flex items-start gap-2">
-                <CheckCircle className="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" />
-                <strong>Ab Chrominance Scaling (110.0):</strong> The raw convolutional logits represent a probability map that is mapped to normalized color bins. Unnormalizing the predicted color maps by multiplying by `110.0` correctly expands the chrominance values to the full range of OpenCV LAB space, reviving the image colors.
-              </li>
-            </ul>
-          </div>
+      {/* Honesty report */}
+      <section className="mb-16">
+        <h2 className="text-2xl font-serif text-stone-800 mb-6 flex items-center gap-2">
+          <ShieldCheck className="w-6 h-6 text-emerald-600" /> The Restoration Report
+        </h2>
+        <div className="bg-stone-50 border border-stone-200 rounded-lg p-6">
+          <p className="text-stone-700 leading-relaxed text-sm">
+            Every run ends with a machine-readable honesty report classifying what happened to your
+            photo: <strong>repaired</strong> (damage removed, original pixels recovered),
+            <strong> reconstructed</strong> (generative infill — plausible, not guaranteed accurate),
+            and <strong>flagged</strong> (residual damage worth attention). Colors added by AI are
+            always disclosed as plausible, never original.
+          </p>
         </div>
       </section>
 
@@ -177,28 +194,32 @@ export default function Documentation() {
         </h2>
         <div className="cream-card p-6">
           <p className="text-stone-700 leading-relaxed mb-4 text-sm">
-            The colorization and restoration logic is organized across clean, decoupled files in the backend codebase:
+            The restoration logic is organized across clean, decoupled modules in the backend codebase:
           </p>
           <div className="space-y-4 text-xs font-mono text-stone-600">
             <div className="p-3 bg-stone-50 border border-stone-200 rounded-lg">
               <strong className="block text-stone-850 font-semibold mb-1">1. API Entry Point:</strong>
-              <code>backend/routers/image_router.py</code> - Receives multipart image uploads, reads colorization boolean and device preference parameters, and returns binary JPEG payloads.
+              <code>backend/routers/image_router.py</code> - Receives multipart image uploads, exposes the SSE progress stream and result endpoints.
             </div>
             <div className="p-3 bg-stone-50 border border-stone-200 rounded-lg">
               <strong className="block text-stone-850 font-semibold mb-1">2. Service Layer Wrapper:</strong>
-              <code>backend/services/image_service.py</code> - Acts as the entry layer for image transformations, delegating tasks to the singleton <code>ImageEnhancer</code> instance.
+              <code>backend/services/image_service.py</code> - Singleton pipeline façade: task store, background execution, status tracking.
             </div>
             <div className="p-3 bg-stone-50 border border-stone-200 rounded-lg">
-              <strong className="block text-stone-850 font-semibold mb-1">3. Enhancement Orchestrator:</strong>
-              <code>backend/ai_model/inference.py</code> - Drives the sequential execution (Stage 0: denoising → Stage 0.5: generative inpainting → Stage 1: RealESRGAN restorer → Stage 2: ECCV16 colorizer) and handles dynamic model transfers between CPU/GPU.
+              <strong className="block text-stone-850 font-semibold mb-1">3. Pipeline Orchestrator:</strong>
+              <code>backend/ai/pipeline/restoration_pipeline.py</code> - Drives the ordered stage registry (analysis → masking → inpainting → denoise → colorize → faces → upscale) with monotonic progress reporting.
             </div>
             <div className="p-3 bg-stone-50 border border-stone-200 rounded-lg">
-              <strong className="block text-stone-850 font-semibold mb-1">4. Chrominance Processing & Post-Scale:</strong>
-              <code>backend/ai_model/colorizer/colorizer.py</code> - Implements LAB conversions, extracts lightness, feeds the generator, scales outputs by 110.0, and reconstructs the RGB final image.
+              <strong className="block text-stone-850 font-semibold mb-1">4. Colorization Engine:</strong>
+              <code>backend/ai/colorization/ddcolor_colorizer.py</code> - DDColor wrapper (512px input) plus chrominance diffusion and artifact reduction.
             </div>
             <div className="p-3 bg-stone-50 border border-stone-200 rounded-lg">
-              <strong className="block text-stone-850 font-semibold mb-1">5. Neural Network Architecture:</strong>
-              <code>backend/ai_model/colorizer/model/model.py</code> - Holds the VGG-style <code>ECCVGenerator</code> class layers, weights definitions, and L-channel normalization functions.
+              <strong className="block text-stone-850 font-semibold mb-1">5. Restoration Engines:</strong>
+              <code>backend/ai/restoration/</code> - LaMa inpainting (inpainting_engine.py), GFPGAN faces (face_restorer.py), Real-ESRGAN ×4 (super_resolution.py).
+            </div>
+            <div className="p-3 bg-stone-50 border border-stone-200 rounded-lg">
+              <strong className="block text-stone-850 font-semibold mb-1">6. Honesty Layer:</strong>
+              <code>backend/ai/report/restoration_report.py</code> - Classifies recovered / reconstructed / flagged evidence and emits the report JSON.
             </div>
           </div>
         </div>
@@ -207,22 +228,37 @@ export default function Documentation() {
       {/* Dataset Credits */}
       <section className="mb-16">
         <h2 className="text-2xl font-serif text-stone-800 mb-6 flex items-center gap-2">
-          <BookOpen className="w-6 h-6 text-indigo-500" /> Training Dataset Credits
+          <BookOpen className="w-6 h-6 text-indigo-500" /> Model Credits
         </h2>
         <div className="bg-stone-50 border border-stone-200 rounded-lg p-6">
           <p className="text-stone-700 leading-relaxed mb-4 text-sm">
-            Special credits and appreciation are given to <strong>Aayush9753</strong> for publishing the public colorization dataset used during model training and evaluation:
+            PixRevive builds on the following published research artifacts:
           </p>
           <div className="flex flex-wrap items-center justify-between gap-4 mt-2">
-            <a 
-              href="https://www.kaggle.com/datasets/aayush9753/image-colorization-dataset" 
-              target="_blank" 
-              rel="noreferrer" 
+            <a
+              href="https://arxiv.org/abs/2308.11470"
+              target="_blank"
+              rel="noreferrer"
               className="text-xs bg-white hover:bg-stone-50 border border-stone-200 text-indigo-600 font-semibold py-2.5 px-4 rounded-lg shadow-sm transition-all flex items-center gap-2 hover:border-stone-300"
             >
-              <Layers className="w-4 h-4 text-indigo-500" /> Kaggle: Image Colorization Dataset
+              <Layers className="w-4 h-4 text-indigo-500" /> DDColor — ICCV 2023
             </a>
-            <span className="text-[11px] text-stone-400 font-mono">Published under Public Domain / CC0 LICENSE</span>
+            <a
+              href="https://arxiv.org/abs/2104.01555"
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs bg-white hover:bg-stone-50 border border-stone-200 text-indigo-600 font-semibold py-2.5 px-4 rounded-lg shadow-sm transition-all flex items-center gap-2 hover:border-stone-300"
+            >
+              <Layers className="w-4 h-4 text-indigo-500" /> Real-ESRGAN — ICCVW 2021
+            </a>
+            <a
+              href="https://arxiv.org/abs/2101.04027"
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs bg-white hover:bg-stone-50 border border-stone-200 text-indigo-600 font-semibold py-2.5 px-4 rounded-lg shadow-sm transition-all flex items-center gap-2 hover:border-stone-300"
+            >
+              <Layers className="w-4 h-4 text-indigo-500" /> GFPGAN — CVPR 2021
+            </a>
           </div>
         </div>
       </section>

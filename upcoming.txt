@@ -1,0 +1,19 @@
+(noisy lenna)sig shrink
+
+Restoration Report
+2 notes
+Re-imagine (beta) did not run: coverage below the hopeless bar (frame 6.0%, worst face 6.673213617658062)
+
+Repaired
+
+• structural damage inpainted (6.0% of frame)
+• dust specks / impulse noise suppressed
+• surface blemishes cleaned (0.7% of frame)
+• grain / noise reduced
+Reconstructed by AI (plausible, not original)
+
+• facial details enhanced by GFPGAN
+Notes
+
+• source is a low-resolution noisy grayscale image — colorization was skipped because every color would be invented (enable colorize explicitly to override)
+• post-verification removed residual specks (0.8% → 0.2% of frame

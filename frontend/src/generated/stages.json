@@ -170,6 +170,15 @@
       "progress_message": "Verifying the restored output...",
       "debug_snapshot": "11_after_output_verify",
       "route_gate": null
+    },
+    {
+      "id": "reimagine",
+      "name": "Re-imagine lost regions (beta)",
+      "method": "_stage_12_reimagine",
+      "progress_pct": 99,
+      "progress_message": "Re-imagining unrecoverable regions (beta)...",
+      "debug_snapshot": "12_after_reimagine",
+      "route_gate": "enable_reimagine"
     }
   ],
   "edge_events": [

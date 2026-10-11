@@ -699,17 +699,17 @@ export default function WeightsAdmin() {
               </div>
             </div>
 
-            {/* ECCV16 colorizer status */}
+            {/* DDColor colorizer status */}
             <div className="cream-card p-8 flex flex-col">
               <div className="flex items-center justify-between mb-6">
                 <h2 className="text-xl font-serif text-stone-900 tracking-wide">Colorization</h2>
-                <span className="bg-stone-100 text-stone-600 text-xs px-3 py-1 rounded-full font-mono border border-stone-200">ECCV16</span>
+                <span className="bg-stone-100 text-stone-600 text-xs px-3 py-1 rounded-full font-mono border border-stone-200">DDColor</span>
               </div>
               
               <div className="architecture-details p-5 mb-8 flex-grow">
                 <ul className="text-sm text-stone-600 space-y-3">
                   <li className="flex justify-between items-center border-b border-stone-200 pb-2">
-                    <span>Architecture</span> <strong className="text-stone-800">ECCV16 Caffe DNN</strong>
+                    <span>Architecture</span> <strong className="text-stone-800">DDColor (ICCV 2023)</strong>
                   </li>
                   <li className="flex justify-between items-center border-b border-stone-200 pb-2">
                     <span>Target Task</span> <strong className="text-stone-800">B&W to Natural Color</strong>
@@ -900,7 +900,7 @@ export default function WeightsAdmin() {
 
                 {/* Colorizer Card */}
                 <div className="cream-card p-6 border-l-4 border-l-amber-500">
-                  <h4 className="font-serif text-lg text-stone-800 mb-4">Colorizer Model (ECCV16)</h4>
+                  <h4 className="font-serif text-lg text-stone-800 mb-4">Colorizer Model (DDColor)</h4>
                   <div className="space-y-3">
                     <div className="flex justify-between items-center border-b border-stone-100 pb-1.5">
                       <span className="text-xs text-stone-500 font-medium">Evaluation Accuracy</span>
