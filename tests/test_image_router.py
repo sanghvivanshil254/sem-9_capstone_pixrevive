@@ -38,6 +38,17 @@ class TestImageRouter(unittest.TestCase):
                 self.assertIn(toggle, preset["toggles"])
         # The default preset must be the full pipeline.
         self.assertTrue(all(presets["default"]["toggles"].values()))
+        # UI-simplification contract (2026-10-01): the default preset is
+        # presented as "Auto (recommended)" — the pipeline router already
+        # adapts per image, so a separate "Auto" preset would be a duplicate.
+        # Single-stage presets (repair/colorize/denoise only) were removed
+        # from the selector; per-stage control lives in More Options.
+        self.assertEqual(presets["default"]["label"], "Auto (recommended)")
+        self.assertNotIn("repair_only", presets)
+        self.assertNotIn("colorize_only", presets)
+        self.assertNotIn("denoise_only", presets)
+        self.assertIn("fast", presets)
+        self.assertIn("reimagine_beta", presets)
 
     def test_upload_valid_png(self):
         # 1x1 transparent PNG bytes

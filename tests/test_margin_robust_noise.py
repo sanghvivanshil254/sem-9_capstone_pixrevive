@@ -6,8 +6,7 @@ speckle-Lena figure) diluted every global noise statistic. MAD sigma collapsed t
 as JPEG blocking.
 
 History note (Phase 6, 2026-09-25): this module's six tests failed at the
-initial baseline commit (c558e25, recorded in docs/baseline_test_run.md as the
-accepted baseline) and never passed. Probing showed their assertions encoded
+initial baseline commit (c558e25) and never passed. Probing showed their assertions encoded
 aspirational values from before the 4A/4B pipeline shipped, contradicting the
 behaviour that benchmark-verified runs produce. They are re-anchored here to
 measured reality (values probed 2026-09-25, Python 3.12 / OpenCV 4.12):

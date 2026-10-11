@@ -88,6 +88,8 @@ class TestHallucinationGuard(unittest.TestCase):
 
         self.assertTrue(np.array_equal(ctx.working_image, pre))
         self.assertTrue(ctx.image_metadata.get("colorization_rolled_back"))
+        # N5: the rollback must carry the machine-readable disclaimer too.
+        self.assertTrue(ctx.image_metadata.get("colorization_disclaimer"))
         self.assertTrue(
             any("rolled back" in line for line in ctx.processing_log)
         )

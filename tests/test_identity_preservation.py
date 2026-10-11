@@ -394,6 +394,33 @@ class TestDamageAwareFaceRestorer(unittest.TestCase):
         self.assertEqual(out.shape, img.shape)
         np.testing.assert_array_equal(out, img)
 
+    def test_full_mode_no_weights_returns_input(self):
+        # N1 (re-audit 2026-09-30): mode="full" used to fall through to the
+        # shared alpha/border-fade block with `mode` unbound (NameError) —
+        # swallowed by the stage catch-all, so full mode silently skipped
+        # GFPGAN. The full-mode branch must compose without an alpha mask.
+        from ai.restoration.face_restorer import FaceRestorer
+        restorer = FaceRestorer()
+        img = np.full((100, 100, 3), 120, dtype=np.uint8)
+
+        out = restorer._restore_single_face(img, damage_mask=None, mode="full")
+        self.assertEqual(out.shape, img.shape)
+        np.testing.assert_array_equal(out, img)
+
+    def test_library_call_with_context_none_is_safe(self):
+        # N2: PasteGuard logging must not assume a PipelineContext — library
+        # callers invoke _restore_single_face without one.
+        from ai.restoration.face_restorer import FaceRestorer
+        restorer = FaceRestorer()
+        img = np.full((100, 100, 3), 120, dtype=np.uint8)
+        mask = np.zeros((100, 100), dtype=np.uint8)
+
+        out = restorer._restore_single_face(
+            img, damage_mask=mask, mode="damage_aware", context=None
+        )
+        self.assertEqual(out.shape, img.shape)
+        np.testing.assert_array_equal(out, img)
+
 
 if __name__ == "__main__":
     # Run tests

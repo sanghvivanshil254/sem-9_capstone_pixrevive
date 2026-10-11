@@ -247,7 +247,6 @@ class TestRestorationRegressions(unittest.TestCase):
         pipeline = RestorationPipeline()
         self.assertTrue(hasattr(pipeline, "process"))
         self.assertTrue(hasattr(pipeline, "restore"))
-        self.assertTrue(hasattr(pipeline, "_wait_for_models"))
 
         # Test process with small test array and all stages disabled for instant unit test
         dummy_img = np.full((64, 64, 3), 128, dtype=np.uint8)

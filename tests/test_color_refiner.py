@@ -19,7 +19,6 @@ from ai.colorization.color_refiner import (
     FacialSkinToneProtector,
     ColorArtifactReducer,
     BandingReducer,
-    SaturationBalancer,
 )
 
 

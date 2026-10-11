@@ -86,13 +86,21 @@ class TestRestorationReport(unittest.TestCase):
         self.assertTrue(report["colorization_disclaimer"])
         self.assertTrue(any("color" in r.lower() for r in report["reconstructed"]))
 
-    def test_colorization_rollback_moves_claim_to_flagged(self):
+    def test_colorization_rollback_sets_disclaimer_and_flag(self):
+        # N5 (re-audit 2026-09-30): a Q-3 rollback means DDColor ran and its
+        # chroma was discarded — the machine-readable disclaimer must be True
+        # even though the output stayed grayscale. Live rollback contexts carry
+        # colorization_applied=False (Stage 6 returns before setting it), which
+        # is exactly why the old evidence gate left the disclaimer False on
+        # case9. The "colors added by AI" reconstructed claim stays suppressed;
+        # the flagged list explains why.
         ctx = _ctx()
         ctx.image_metadata["color_type"] = "grayscale"
+        ctx.image_metadata["colorization_applied"] = False
         ctx.image_metadata["colorization_rolled_back"] = True
         report = build_restoration_report(ctx)
-        self.assertFalse(report["colorization_disclaimer"])
-        self.assertFalse(report["reconstructed"])
+        self.assertTrue(report["colorization_disclaimer"])
+        self.assertFalse(any("colors added" in r for r in report["reconstructed"]))
         self.assertTrue(any("rolled back" in f for f in report["flagged"]))
 
     def test_colorize_disabled_never_claims_colorization(self):

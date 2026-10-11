@@ -43,9 +43,18 @@ _TASK_TTL_SECONDS = 1800
 # UI exposes; unknown keys are ignored by the backend, so this dict is the
 # single source of truth for what a preset means.
 PRESETS: Dict[str, Dict[str, Any]] = {
+    # "Auto (recommended)" — id stays "default": the frontend seeds its
+    # toggles from presets.default on load and the Q-8 contract test pins
+    # it as the full pipeline. The pipeline router already picks the route
+    # per image (damage/noise/blur/color-type), so this IS the auto mode;
+    # a separate "Auto" preset would be an identical duplicate.
     "default": {
-        "label": "Default",
-        "description": "Full pipeline: repair, denoise, colorize, faces, 4x upscale.",
+        "label": "Auto (recommended)",
+        "description": (
+            "Full pipeline with automatic routing: the backend analyses each "
+            "photo (damage, noise, blur, color type) and adapts — repair, "
+            "denoise, colorize, faces, 4x upscale."
+        ),
         "toggles": {
             "enable_repair": True,
             "enable_denoise": True,
@@ -62,28 +71,6 @@ PRESETS: Dict[str, Dict[str, Any]] = {
             "enable_denoise": True,
             "enable_colorization": False,
             "enable_face_restore": True,
-            "enable_sr": False,
-        },
-    },
-    "repair_only": {
-        "label": "Repair only",
-        "description": "Structural inpainting of tears and specks; everything else off.",
-        "toggles": {
-            "enable_repair": True,
-            "enable_denoise": False,
-            "enable_colorization": False,
-            "enable_face_restore": False,
-            "enable_sr": False,
-        },
-    },
-    "colorize_only": {
-        "label": "Colorize only",
-        "description": "DDColor colorization on an otherwise untouched scan.",
-        "toggles": {
-            "enable_repair": False,
-            "enable_denoise": False,
-            "enable_colorization": True,
-            "enable_face_restore": False,
             "enable_sr": False,
         },
     },
@@ -104,17 +91,6 @@ PRESETS: Dict[str, Dict[str, Any]] = {
             "enable_face_restore": True,
             "enable_sr": True,
             "enable_reimagine": True,
-        },
-    },
-    "denoise_only": {
-        "label": "Denoise only",
-        "description": "Spatially-gated grain suppression; no repairs or upscaling.",
-        "toggles": {
-            "enable_repair": False,
-            "enable_denoise": True,
-            "enable_colorization": False,
-            "enable_face_restore": False,
-            "enable_sr": False,
         },
     },
 }
@@ -212,7 +188,10 @@ async def process_image(
     restore:   bool = Form(True),
     repair:    bool = Form(True),
     colorize:  bool = Form(True),
-    denoise:   bool = Form(False),
+    # N3 (re-audit 2026-09-30): was Form(False), silently skipping spatial
+    # denoising for direct API callers while the service/pipeline/UI all
+    # default it on. Aligned with process()'s enable_denoise=True default.
+    denoise:   bool = Form(True),
     reimagine: bool = Form(False),
     device:    str  = Form("auto"),
 ):
@@ -257,7 +236,10 @@ async def process_image_stream(
     restore:   bool = Form(True),
     repair:    bool = Form(True),
     colorize:  bool = Form(True),
-    denoise:   bool = Form(False),
+    # N3 (re-audit 2026-09-30): was Form(False), silently skipping spatial
+    # denoising for direct API callers while the service/pipeline/UI all
+    # default it on. Aligned with process()'s enable_denoise=True default.
+    denoise:   bool = Form(True),
     reimagine: bool = Form(False),
     device:    str  = Form("auto"),
 ):

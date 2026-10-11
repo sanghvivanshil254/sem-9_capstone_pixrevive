@@ -80,6 +80,21 @@ class TestStageRegistry(unittest.TestCase):
         self.assertEqual(by_id["damage_detect"]["progress_pct"], 20)
         self.assertEqual(by_id["super_res"]["route_gate"], "enable_sr")
 
+    def test_frontend_stages_json_is_in_sync(self):
+        # N7 (re-audit 2026-09-30): the committed export went stale (missing
+        # the Phase-H1 `reimagine` stage) and ProgressBar fell back to
+        # "Processing..." for an emitted stage. Pin the generated file to the
+        # registry; regen with scripts/export_stage_list.py.
+        import json
+
+        out_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "frontend", "src", "generated", "stages.json",
+        )
+        with open(out_path, encoding="utf-8") as fh:
+            on_disk = json.load(fh)
+        self.assertEqual(on_disk, registry_to_json())
+
     def test_get_stage_resolves_stages_and_edges(self):
         self.assertEqual(get_stage("colorize").id, "colorize")
         self.assertEqual(get_stage("complete").id, "complete")
