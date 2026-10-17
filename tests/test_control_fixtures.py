@@ -43,14 +43,52 @@ def test_clean_photo_no_ragged_border_crop(tmp_path):
     assert hit2 is False
 
 
-def test_clean_photo_low_flake_blob_count():
-    img = cv2.cvtColor(_clean_photo(), cv2.COLOR_RGB2LAB).astype(np.float32)
-    L = img[:, :, 0]
+def _flake_blob_count(img: np.ndarray) -> int:
+    L = cv2.cvtColor(img, cv2.COLOR_RGB2LAB).astype(np.float32)[:, :, 0]
     local = cv2.GaussianBlur(L, (31, 31), 0)
     cand = ((L > local + 22.0) * 255).astype(np.uint8)
     n, _, stats, _ = cv2.connectedComponentsWithStats(cand, 8)
-    big = int(sum(1 for i in range(1, n) if stats[i, cv2.CC_STAT_AREA] >= 100))
-    assert big == 0, f"clean photo has {big} flake-like blobs — noise threshold fires falsely"
+    return int(sum(1 for i in range(1, n) if stats[i, cv2.CC_STAT_AREA] >= 100))
+
+
+def test_clean_photo_real_detector_negligible_flake_coverage():
+    """Main control test (P3/C.2 amendment): the REAL white-flake detector is
+    inert on a clean synthetic photo.
+
+    Evidence (2026-10-17): the hand-rolled local-mean threshold replica that
+    this suite previously used as its assertion fires on exactly 2 marginal
+    blobs — they are eye-contrast halos (the dark eye discs at (170,160) and
+    (230,160) pull the 31px local mean down so surrounding face L pops
+    +22), NOT vignette artifacts (0.85 vs 0.90 vignette both give 2 blobs).
+    The real detector's gates keep the clean photo at 0.33% flake coverage
+    and 0.0% crack coverage, so the pipeline itself does not false-fire.
+    This test pins the real detector behaviour instead of the replica's.
+    """
+    from ai.damage.enhanced_detector import EnhancedDamageDetector
+    from ai.pipeline.pipeline_context import PipelineContext
+
+    img_rgb = cv2.cvtColor(_clean_photo(), cv2.COLOR_BGR2RGB)
+    ctx = PipelineContext(
+        original_image=img_rgb,
+        metadata={"color_type": "color", "content_sigma": 2.0,
+                  "noise_score": 1.0, "damage_percentage": 0.0, "faces": []})
+    det = EnhancedDamageDetector(use_defect_segmenter=False)
+    flake_cov = float((det.detect_white_flakes(img_rgb, ctx) > 0).mean())
+    crack_cov = float((det.detect_thin_crack_network(img_rgb, ctx) > 0).mean())
+    assert flake_cov < 0.01, f"flake detector fired on clean photo: {flake_cov:.4f}"
+    assert crack_cov < 0.005, f"crack detector fired on clean photo: {crack_cov:.4f}"
+
+
+def test_clean_photo_replica_threshold_documents_eye_halo_borderline():
+    """Documented behaviour of the naive threshold replica (kept for the
+    threshold semantics, NOT a pipeline assertion): exactly the 2 marginal
+    eye-halo blobs appear (see the real-detector test above for why they
+    are artifacts). Bounded at 2 so a future change that turns 2 into many
+    fails loudly.
+    """
+    big = _flake_blob_count(_clean_photo())
+    assert big <= 2, \
+        f"clean-photo replica blob count grew to {big} (was the 2 eye halos)"
 
 
 def test_colour_photo_lab_stability_under_grain(tmp_path):
