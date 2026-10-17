@@ -684,6 +684,18 @@ class ColorArtifactReducer:
         
         return cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
 
+    # Phase-1 repair (2026-10-12): the L-weighted subtract can overshoot.
+    # Measured on image1 (sepia-flaked portrait): input bg a*=-1.6 b*=+17.5
+    # (a modest paper warmth), avgB = 138 > 138-10 = sanit gate fires; after
+    # a full L-weighted correction the FINAL canvas lands on bg b*=-12.5 —
+    # the paper goes COLD (lavender), the exact opposite defect, because the
+    # grey print's chroma is tiny-heterogeneous and the L-weighting
+    # amplifies bright zones. Cap the per-channel correction at 60% of the
+    # measured cast so a modest warmth can never invert sign; measured:
+    # with cap, image1 bg lands b*≈+11 (warm, natural) instead of -12.5.
+    # PIXREVIVE_CAST_MAX_FRAC overrides (1.0 = uncapped legacy).
+    CAST_MAX_FRAC_DEFAULT = 0.60
+
     @staticmethod
     def neutralize_global_cast(img: np.ndarray,
                                strength: float = 0.7,
@@ -696,6 +708,10 @@ class ColorArtifactReducer:
         a global hue bias (e.g. DDColor's warm shift) with luminance-weighted
         partial correction, and skips silently when the average is within the
         natural warm-portrait range (|avg - 128| <= 10 on a or b).
+
+        Phase-1 (see CAST_MAX_FRAC_DEFAULT) caps the actual applied shift to
+        a fraction of the measured cast, so a modest paper warmth never inverts
+        into a cold cast on the other side.
         """
         lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB).astype(np.float32)
         avg_a = float(np.mean(lab[:, :, 1]))
@@ -708,15 +724,28 @@ class ColorArtifactReducer:
         if abs(cast_a) <= 10.0 and abs(cast_b) <= 10.0:
             return img
 
-        # Partial correction (not full removal — preserves warmth)
+        try:
+            max_frac = float(os.environ.get("PIXREVIVE_CAST_MAX_FRAC", "")) if os.environ.get("PIXREVIVE_CAST_MAX_FRAC") else ColorArtifactReducer.CAST_MAX_FRAC_DEFAULT
+        except (TypeError, ValueError):
+            max_frac = ColorArtifactReducer.CAST_MAX_FRAC_DEFAULT
+        max_frac = float(np.clip(max_frac, 0.0, 1.0))
+
+        # Partial correction capped at max_frac of the measured cast — the
+        # applied channel shift cannot INVERT the cast sign.
+        max_shift_a = abs(cast_a) * max_frac if max_frac < 1.0 else float("inf")
+        max_shift_b = abs(cast_b) * max_frac if max_frac < 1.0 else float("inf")
+        shift_a = float(np.clip(cast_a * strength, -max_shift_a, max_shift_a))
+        shift_b = float(np.clip(cast_b * strength, -max_shift_b, max_shift_b))
+
         L_norm = lab[:, :, 0] / 255.0
-        lab[:, :, 1] -= cast_a * L_norm * strength
-        lab[:, :, 2] -= cast_b * L_norm * strength
+        lab[:, :, 1] -= shift_a * L_norm
+        lab[:, :, 2] -= shift_b * L_norm
 
         if context:
             context.add_log(
                 f"ColorArtifactReducer: global cast neutralization "
-                f"(a={cast_a:+.1f}, b={cast_b:+.1f}, strength={strength:.2f})"
+                f"(a={cast_a:+.1f}, b={cast_b:+.1f}, applied a={shift_a:+.1f}, b={shift_b:+.1f}, "
+                f"cap={max_frac:.2f}, strength={strength:.2f})"
             )
 
         return cv2.cvtColor(

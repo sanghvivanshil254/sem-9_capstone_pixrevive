@@ -147,6 +147,23 @@ def robust_sigma(gray_u8: np.ndarray, mask: Optional[np.ndarray] = None) -> floa
 
     Uses the high-pass residual (pixel - 3x3 median) which is the same statistic
     Stage 5 uses, but restricted to content. Returns 0.0 when content is flat.
+
+    Lena-mottle rescue branch: a dense 1-2px halftone mottle field can lurk
+    *below* the 3x3-median residual — a 1px speck's residual is ~0 whenever
+    its 3x3 window contains another speck within a few gray levels of the
+    local base. On the synthetic pure-255-frame probe the field covers 27%
+    of content windows at amplitude 6-13, yet the plain median saturates on
+    the flat floor (residual 0 at the 62nd percentile) and the classic
+    estimator reports sigma 0.00. Every Stage-5 NLM h = max(floor, k*sigma)
+    then floors at 5.5-6.5, the mottle survives into mid-res content, and
+    SR+sharpen re-amplifies it as a dotted-moss texture.
+
+    This branch engages ONLY when the classic estimate is truly COLLAPSED
+    (sigma_mad < 1.0, median saturated on the flat floor). A higher gate
+    (e.g. < 2.0) hijacks real fixtures: the shipped case8/lena-figure input
+    measures sigma_mad 1.48 with 20% windows covered by 20-amplitude specks —
+    those are sparse speckle = DAMAGE on the repair path, and re-labeling
+    them a dense grain field flips the route and leaves the specks in.
     """
     if gray_u8.ndim != 2:
         gray_u8 = cv2.cvtColor(gray_u8, cv2.COLOR_RGB2GRAY)
@@ -158,4 +175,32 @@ def robust_sigma(gray_u8: np.ndarray, mask: Optional[np.ndarray] = None) -> floa
     if sel.size < 500:
         sel = residual.ravel()
     mad = float(np.median(sel))
-    return 1.4826 * mad
+    sigma_mad = 1.4826 * mad
+
+    # Mottle rescue: only when the median SATURATED on the flat floor.
+    # Single-speck amplitude floor: specks below this are sensor/quantization
+    # noise (clean-scan residual p50 = 0.0, p95 < 2).
+    if sigma_mad < 1.0:
+        _speck_amp = 4.0
+        hostile = (residual >= _speck_amp).astype(np.float32)
+        cnt = cv2.boxFilter(hostile, -1, (3, 3), normalize=False)
+        core = cv2.erode((m > 0).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+        cover = float((cnt[core] >= 2).mean()) if bool(core.any()) else 0.0
+        if cover >= 0.05:
+            # Population amplitude: per-pixel MAD over the hostile speck
+            # population only (robust to the flat floor dominating the median).
+            hostiles = residual[(m > 0) & (residual >= _speck_amp)]
+            if hostiles.size >= 100:
+                host_mad = float(np.median(np.abs(hostiles - np.median(hostiles))))
+                sigma_speck = 1.4826 * host_mad
+            else:
+                sigma_speck = 0.0
+            p95 = float(np.percentile(hostiles, 95)) if hostiles.size >= 100 else 0.0
+            sigma_mottle = max(sigma_speck, min(p95, 16.0) * 0.55)
+            # Coverage-weighted blend: a sparse 5% speckle adds little; a
+            # dense field (27% on the probe) biases the sigma up to the
+            # real speck population so Stage 5's NLM actually acts on it.
+            blend = float(np.clip((cover - 0.05) / 0.25, 0.0, 1.0))
+            return float(min(sigma_mad + blend * sigma_mottle, 20.0))
+
+    return sigma_mad
