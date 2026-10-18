@@ -899,6 +899,91 @@ class FinishStagesMixin:
         context.end_timer("super_resolution")
         DebugLogger.save_stage(context, "09_after_super_res")
 
+        # P2: flag-gated post-SR seam feather. LaMa creates the repair seam at
+        # Stage 3 and nothing re-smooths its boundary band after upscaling, so
+        # Real-ESRGAN x4 amplifies it (+116% lena, +68% bw on FinalMetric at
+        # common resolution). Disabled by default pending Phase-2 A/B medians.
+        try:
+            final_mask = context.damage_masks.get("final")
+            if final_mask is not None:
+                self._post_sr_seam_feather(context, final_mask)
+        except Exception as exc:
+            context.add_log(f"Post-SR seam feather skipped ({exc}) — leaving SR output untouched.")
+
+    # Band half-width for the seam feather/FinalMetric trace, at working
+    # resolution: ~1% of the short side (5px floor keeps the 120px unit-test
+    # canvases and the FinalMetric 5px band identical).
+    @staticmethod
+    def _seam_band_halfwidth(shape) -> int:
+        return max(5, int(round(min(shape[:2]) * 0.01)) | 1)
+
+    def _post_sr_seam_feather(self, context: PipelineContext, mask: np.ndarray) -> None:
+        """P2: feather ONLY the mask boundary band after super-resolution.
+
+        Blend in LAB strictly inside the band between the eroded mask interior
+        and its dilated exterior (FinalMetric band semantics), so the SR-
+        amplified step at the LaMa border is re-fused instead of sharpened.
+        Facial anatomy is excluded verbatim: landmark discs (eyes/nose/mouth)
+        when landmarks exist, the whole face bbox when they do not — GFPGAN
+        already owns that canvas. Nothing outside the band is touched, and
+        the blend weight is itself Gaussian-ramped so the feather cannot
+        create a new edge at the band boundary.
+        """
+        flag = os.environ.get("PIXREVIVE_POST_SR_SEAM_FEATHER", "0").strip().lower() not in (
+            "", "0", "false", "no", "off")
+        if not flag:
+            return
+        img = context.working_image
+        if img is None or mask is None:
+            return
+        h, w = img.shape[:2]
+        if mask.shape[:2] != (h, w):
+            mask = ((cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST) > 0)
+                    .astype(np.uint8) * 255)
+
+        k = self._seam_band_halfwidth((h, w))
+        kern = np.ones((k, k), np.uint8)
+        inner = cv2.erode((mask > 0).astype(np.uint8), kern) > 0
+        outer = cv2.dilate((mask > 0).astype(np.uint8), kern) > 0
+        band = (outer & ~inner).astype(np.uint8)
+        if not band.any():
+            return
+
+        # Facial anatomy: landmark discs (default a generous 12% of face
+        # height so a bbox fallback is never needed when landmarks exist;
+        # 16px floor covers the compact test-style landmark sets), or whole
+        # bboxes with no landmarks.
+        excl = np.zeros((h, w), np.uint8)
+        faces = (getattr(context, "image_metadata", None) or {}).get("faces") or []
+        for face in faces:
+            bbox = face.get("bbox")
+            landmarks = face.get("landmarks")
+            if not bbox:
+                continue
+            x0, y0, x1, y1 = [int(v) for v in bbox[:4]]
+            if not landmarks:
+                excl[max(0, y0):min(h, y1 + 1), max(0, x0):min(w, x1 + 1)] = 255
+                continue
+            r = max(16, int(round((y1 - y0) * 0.12)))
+            for (lx, ly) in landmarks:
+                cv2.circle(excl, (int(lx), int(ly)), r, 255, -1)
+
+        src = img.astype(np.float32)
+        sigma = max(1.5, k * 0.5)
+        ksz = int(2 * round(3 * sigma) + 1)
+        smooth = cv2.GaussianBlur(src, (ksz, ksz), sigma)
+        # Gaussian-ramp the weight itself so blending fades to exact zero at
+        # the band edge (no new edge at the feather boundary).
+        wgt = cv2.GaussianBlur(band * 255, (ksz, ksz), 0).astype(np.float32) / 255.0
+        wgt[band == 0] = 0.0
+        wgt[excl > 0] = 0.0
+        out = np.rint(src * (1.0 - wgt[..., None]) + smooth * wgt[..., None])
+        context.working_image = np.clip(out, 0, 255).astype(np.uint8)
+        context.add_log(
+            f"Post-SR seam feather: blended {int(wgt[wgt > 0].size)} band px "
+            f"(band±{k}, y excluded={int(np.count_nonzero(excl))}), sigma={sigma:.1f}."
+        )
+
     def _stage_10_post_sr_sharpen(self, context: PipelineContext, on_progress: Optional[Callable] = None) -> None:
         """
         Stage 10: Post-SR Luminance Crispness Calibration.
