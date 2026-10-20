@@ -10,10 +10,17 @@ import ProgressBar from './ProgressBar';
 import RestorationReportCard from './RestorationReportCard';
 import { backendUrl } from '../services/api';
 
-function PaneHeader({ children }) {
+function PaneHeader({ title, size }) {
   return (
-    <div className="flex items-center justify-between mb-3 border-b border-stone-100 pb-2">
-      <h3 className="text-stone-800 font-semibold text-sm uppercase tracking-wider">{children}</h3>
+    <div className="flex items-center justify-between mb-2.5 sm:mb-3 border-b border-stone-100 pb-2">
+      <h3 className="text-stone-800 font-semibold text-xs sm:text-sm uppercase tracking-wider">
+        {title}
+      </h3>
+      {size?.width && size?.height ? (
+        <span className="text-[11px] font-mono text-stone-500 bg-stone-100 px-2 py-0.5 rounded border border-stone-200/60">
+          {size.width} &times; {size.height}px
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -30,79 +37,88 @@ export default function ResultCard({
   setResultSize,
 }) {
   const [showEvidence, setShowEvidence] = useState(false);
+
   // Only hybrid runs publish an evidence overlay (design doc §7).
   const evidenceOverlay =
     restorationReport?.reimagine?.mode === 'hybrid-restoration'
       ? restorationReport.reimagine.evidence_overlay
       : null;
+
   return (
-    <div className="flex flex-col md:flex-row gap-8 items-start justify-center">
-      {/* Original Image */}
-      <div className="flex-1 flex flex-col w-full">
-        <PaneHeader>Original Source</PaneHeader>
-        <div className="relative w-full aspect-[4/3] bg-stone-50 rounded border border-stone-200 flex items-center justify-center p-2">
+    <div className="flex flex-col lg:flex-row gap-6 lg:gap-8 items-start justify-center w-full">
+      {/* Original Image Pane */}
+      <div className="flex-1 flex flex-col w-full min-w-0">
+        <PaneHeader title="Original Source" size={originalSize} />
+        <div className="relative w-full aspect-[4/3] sm:min-h-[280px] max-h-[60vh] bg-stone-50 rounded-lg border border-stone-200 flex items-center justify-center p-2 overflow-hidden shadow-xs">
           <img
             src={preview}
-            alt="Original"
-            title={originalSize ? `${originalSize.width} × ${originalSize.height}px` : 'Original image size'}
+            alt="Original source photograph"
+            title={originalSize ? `${originalSize.width} × ${originalSize.height}px` : 'Original image'}
             onLoad={(e) => {
               const img = e.currentTarget;
               setOriginalSize({ width: img.naturalWidth, height: img.naturalHeight });
             }}
-            className="max-w-full max-h-full object-contain rounded-sm"
+            className="max-w-full max-h-full object-contain rounded-xs select-none"
           />
         </div>
       </div>
 
-      {/* Restored Image */}
+      {/* Restored Image Pane */}
       {resultImage ? (
-        <div className="flex-1 flex flex-col w-full">
-          <PaneHeader>Restored Output</PaneHeader>
-          <div className="relative w-full aspect-[4/3] bg-stone-50 rounded border border-stone-200 flex items-center justify-center p-2 shadow-sm">
+        <div className="flex-1 flex flex-col w-full min-w-0">
+          <PaneHeader title="Restored Output" size={resultSize} />
+          <div className="relative w-full aspect-[4/3] sm:min-h-[280px] max-h-[60vh] bg-stone-50 rounded-lg border border-stone-200 flex items-center justify-center p-2 shadow-xs overflow-hidden">
             <img
               src={resultImage}
-              alt="Restored"
-              title={resultSize ? `${resultSize.width} × ${resultSize.height}px` : 'Restored image size'}
+              alt="AI Restored output"
+              title={resultSize ? `${resultSize.width} × ${resultSize.height}px` : 'Restored image'}
               onLoad={(e) => {
                 const img = e.currentTarget;
                 setResultSize({ width: img.naturalWidth, height: img.naturalHeight });
               }}
-              className="max-w-full max-h-full object-contain rounded-sm"
+              className="max-w-full max-h-full object-contain rounded-xs select-none"
             />
+
+            {/* Evidence overlay for hybrid runs */}
             {showEvidence && evidenceOverlay && (
               <img
                 src={backendUrl(evidenceOverlay)}
                 alt="Evidence zones: green = original pixels, magenta = AI-re-imagined"
-                className="absolute inset-2 w-[calc(100%-1rem)] h-[calc(100%-1rem)] object-contain rounded-sm pointer-events-none"
+                className="absolute inset-2 w-[calc(100%-1rem)] h-[calc(100%-1rem)] object-contain rounded-xs pointer-events-none"
               />
             )}
+
+            {/* Show what's real toggle */}
             {evidenceOverlay && (
               <button
                 type="button"
                 onClick={() => setShowEvidence((v) => !v)}
-                className="absolute top-2 right-2 z-10 flex items-center gap-1.5 rounded-md bg-stone-900/80 px-2.5 py-1.5 text-[11px] font-medium text-stone-50 hover:bg-stone-900 transition-colors"
+                className="absolute top-2.5 right-2.5 z-10 flex items-center gap-1.5 rounded-lg bg-stone-900/85 backdrop-blur-xs px-3 py-2 text-xs font-semibold text-stone-50 hover:bg-stone-900 active:bg-black transition-all shadow-md min-h-[44px] min-w-[44px] cursor-pointer"
                 title="Green = surviving original pixels · Magenta = AI-re-imagined zones"
+                aria-label={showEvidence ? 'Hide evidence zones' : "Show what's real evidence zones"}
               >
-                {showEvidence ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                {showEvidence ? 'Hide zones' : "Show what's real"}
+                {showEvidence ? <EyeOff className="w-4 h-4 text-amber-300" /> : <Eye className="w-4 h-4 text-emerald-300" />}
+                <span>{showEvidence ? 'Hide zones' : "Show what's real"}</span>
               </button>
             )}
           </div>
+
+          {/* Restoration Report */}
           <RestorationReportCard report={restorationReport} />
         </div>
       ) : status === 'processing' ? (
-        <div className="flex-1 flex flex-col w-full">
-          <PaneHeader>Restoring...</PaneHeader>
-          <div className="relative w-full aspect-[4/3] bg-stone-50 rounded border border-stone-200 flex flex-col items-center justify-center p-2">
+        <div className="flex-1 flex flex-col w-full min-w-0">
+          <PaneHeader title="Restoring..." />
+          <div className="relative w-full aspect-[4/3] sm:min-h-[280px] max-h-[60vh] bg-stone-50 rounded-lg border border-stone-200 flex flex-col items-center justify-center p-4 sm:p-6 shadow-xs">
             <ProgressBar progress={progress} />
           </div>
         </div>
       ) : (
-        <div className="flex-1 flex flex-col w-full hidden md:flex opacity-30">
-          <PaneHeader>Restored Output</PaneHeader>
-          <div className="relative w-full aspect-[4/3] bg-stone-50 rounded border border-stone-200 flex flex-col items-center justify-center p-2">
-            <ImageIcon className="w-12 h-12 text-stone-300 mb-2 stroke-1" />
-            <span className="text-stone-400 text-sm">Awaiting processing</span>
+        <div className="flex-1 flex flex-col w-full min-w-0 opacity-40">
+          <PaneHeader title="Restored Output" />
+          <div className="relative w-full aspect-[4/3] sm:min-h-[280px] max-h-[60vh] bg-stone-50 rounded-lg border border-stone-200 flex flex-col items-center justify-center p-4 text-center">
+            <ImageIcon className="w-10 h-10 sm:w-12 sm:h-12 text-stone-300 mb-2 stroke-[1.25]" />
+            <span className="text-stone-500 text-xs sm:text-sm font-medium">Awaiting processing</span>
           </div>
         </div>
       )}

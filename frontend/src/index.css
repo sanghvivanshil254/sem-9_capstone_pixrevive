@@ -1,7 +1,35 @@
 @import "tailwindcss";
 
+/* -------------------------------------------------------------------------- */
+/* Responsive CSS Foundation & Reset                                          */
+/* -------------------------------------------------------------------------- */
+
+:root {
+  --sat: env(safe-area-inset-top, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --app-height: 100vh;
+  --app-dvh: 100dvh;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  scroll-behavior: smooth;
+  font-size: 16px;
+}
+
 body {
   margin: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
     'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
     sans-serif;
@@ -9,9 +37,143 @@ body {
   -moz-osx-font-smoothing: grayscale;
   background-color: #faf9f6; /* Off-white / Cream */
   color: #292524; /* Stone 800 */
+  overflow-x: hidden;
+  line-height: 1.5;
+  text-rendering: optimizeLegibility;
 }
 
-code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
-    monospace;
+/* Fluid responsive typography helpers */
+h1 {
+  font-size: clamp(1.75rem, 4vw + 1rem, 3rem);
+  line-height: 1.15;
+}
+
+h2 {
+  font-size: clamp(1.35rem, 2.5vw + 0.5rem, 2rem);
+  line-height: 1.25;
+}
+
+h3 {
+  font-size: clamp(1.1rem, 1.5vw + 0.5rem, 1.35rem);
+  line-height: 1.35;
+}
+
+/* Inputs and Forms: prevent iOS Safari auto-zoom by keeping font-size >= 16px on mobile */
+@media screen and (max-width: 767px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+/* Ensure images and media are strictly fluid and preserve aspect-ratio */
+img,
+svg,
+video,
+canvas {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* Prevent overflow from long unbroken words, URLs, hashes, and model paths */
+p,
+span,
+li,
+dt,
+dd,
+code,
+pre {
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+code,
+pre,
+kbd {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New', monospace;
+}
+
+/* Safe area padding utilities */
+.safe-pt {
+  padding-top: max(1rem, env(safe-area-inset-top, 0px));
+}
+
+.safe-pb {
+  padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
+}
+
+.safe-pl {
+  padding-left: max(1rem, env(safe-area-inset-left, 0px));
+}
+
+.safe-pr {
+  padding-right: max(1rem, env(safe-area-inset-right, 0px));
+}
+
+.safe-px {
+  padding-left: max(1rem, env(safe-area-inset-left, 0px));
+  padding-right: max(1rem, env(safe-area-inset-right, 0px));
+}
+
+/* Smooth touch scrolling for intentional scroll containers */
+.touch-scroll-x {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+}
+
+.touch-scroll-y {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+
+/* Custom minimal scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f5f5f4;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d6d3d1;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a8a29e;
+}
+
+/* Accessibility: Visible Focus States */
+:focus-visible {
+  outline: 2px solid #6366f1;
+  outline-offset: 2px;
+}
+
+/* Reduced Motion Preference */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Short height landscape mobile styling (e.g. 640x360, 844x390 in landscape) */
+@media (max-height: 500px) and (orientation: landscape) {
+  .py-landscape-compact {
+    padding-top: 0.75rem !important;
+    padding-bottom: 0.75rem !important;
+  }
+  .mb-landscape-compact {
+    margin-bottom: 1rem !important;
+  }
 }

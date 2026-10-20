@@ -25,7 +25,7 @@ export default function WeightsAdmin() {
   const [newColorFile, setNewColorFile] = useState(null);
   const [addStatus, setAddStatus] = useState('idle');
 
-  // New features state
+  // Search & Batch state
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedIds, setSelectedIds] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -61,7 +61,6 @@ export default function WeightsAdmin() {
       const data = res.data;
       setTrainingState(data);
       
-      // Build terminal log messages based on trainingState
       const logs = [];
       if (data.status !== 'idle') {
         logs.push(`[SYSTEM] Initializing training pipeline...`);
@@ -92,7 +91,6 @@ export default function WeightsAdmin() {
         return true;
       } else {
         setIsTraining(false);
-        // Refresh weights status if training just finished to reflect new models
         if (data.status === 'completed') {
           fetchWeightsStatus();
         }
@@ -207,7 +205,7 @@ export default function WeightsAdmin() {
   const renderLossChart = () => {
     if (!trainingState.epochs || trainingState.epochs.length === 0) {
       return (
-        <div className="flex items-center justify-center h-48 text-stone-400 text-sm border border-stone-200 rounded-xl bg-stone-50">
+        <div className="flex items-center justify-center h-48 text-stone-400 text-xs sm:text-sm border border-stone-200 rounded-xl bg-stone-50 p-4 text-center">
           No training metrics logged yet.
         </div>
       );
@@ -250,47 +248,53 @@ export default function WeightsAdmin() {
 
     return (
       <div className="flex flex-col w-full">
-        <div className="flex items-center justify-center gap-4 text-xs mb-3 font-semibold">
-          <span className="flex items-center gap-1.5 text-indigo-600"><span className="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>Restorer Loss</span>
-          <span className="flex items-center gap-1.5 text-amber-500"><span className="w-2.5 h-2.5 rounded-full bg-amber-500"></span>Colorizer Loss</span>
+        <div className="flex flex-wrap items-center justify-center gap-3 sm:gap-6 text-xs mb-3 font-semibold">
+          <span className="flex items-center gap-1.5 text-indigo-600">
+            <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 shrink-0"></span>Restorer Loss (MSE)
+          </span>
+          <span className="flex items-center gap-1.5 text-amber-600">
+            <span className="w-2.5 h-2.5 rounded-full bg-amber-500 shrink-0"></span>Colorizer Loss (Cross-Entropy)
+          </span>
         </div>
-        <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto bg-stone-50/50 border border-stone-200 rounded-xl p-2">
-          {[0, 0.25, 0.5, 0.75, 1.0].map((ratio, i) => {
-            const yVal = ratio * maxLoss;
-            const y = getY(yVal);
-            return (
-              <g key={i} className="opacity-40">
-                <line x1={paddingLeft} y1={y} x2={width - paddingRight} y2={y} stroke="#d6d3d1" strokeDasharray="3 3" />
-                <text x={paddingLeft - 8} y={y + 4} textAnchor="end" className="text-[10px] font-mono fill-stone-500">{yVal.toFixed(3)}</text>
-              </g>
-            );
-          })}
+        <div className="w-full overflow-x-auto touch-scroll-x">
+          <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto min-w-[280px] bg-stone-50/50 border border-stone-200 rounded-xl p-2">
+            {[0, 0.25, 0.5, 0.75, 1].map((ratio, i) => {
+              const val = maxLoss * ratio;
+              const y = getY(val);
+              return (
+                <g key={i} className="opacity-40">
+                  <line x1={paddingLeft} y1={y} x2={width - paddingRight} y2={y} stroke="#d6d3d1" strokeDasharray="3 3" />
+                  <text x={paddingLeft - 8} y={y + 4} textAnchor="end" className="text-[10px] font-mono fill-stone-500">{val.toFixed(2)}</text>
+                </g>
+              );
+            })}
 
-          {trainingState.epochs.map((e, idx) => {
-            const x = getX(idx);
-            return (
+            {trainingState.epochs.map((e, idx) => {
+              const x = getX(idx);
+              return (
+                <g key={idx}>
+                  {idx > 0 && idx < 9 && (
+                    <line x1={x} y1={paddingTop} x2={x} y2={height - paddingBottom} stroke="#e7e5e4" strokeDasharray="3 3" className="opacity-20" />
+                  )}
+                  <text x={x} y={height - paddingBottom + 16} textAnchor="middle" className="text-[10px] font-mono fill-stone-500">E{e.epoch}</text>
+                </g>
+              );
+            })}
+
+            <line x1={paddingLeft} y1={height - paddingBottom} x2={width - paddingRight} y2={height - paddingBottom} stroke="#78716c" strokeWidth="1" />
+            <line x1={paddingLeft} y1={paddingTop} x2={paddingLeft} y2={height - paddingBottom} stroke="#78716c" strokeWidth="1" />
+
+            <path d={restorerPoints} fill="none" stroke="#6366f1" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            <path d={colorizerPoints} fill="none" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+
+            {trainingState.epochs.map((e, idx) => (
               <g key={idx}>
-                {idx > 0 && idx < 9 && (
-                  <line x1={x} y1={paddingTop} x2={x} y2={height - paddingBottom} stroke="#e7e5e4" strokeDasharray="3 3" className="opacity-20" />
-                )}
-                <text x={x} y={height - paddingBottom + 16} textAnchor="middle" className="text-[10px] font-mono fill-stone-500">E{e.epoch}</text>
+                <circle cx={getX(idx)} cy={getY(e.restorer_loss)} r="3" fill="#6366f1" stroke="#fff" strokeWidth="1" />
+                <circle cx={getX(idx)} cy={getY(e.colorizer_loss)} r="3" fill="#f59e0b" stroke="#fff" strokeWidth="1" />
               </g>
-            );
-          })}
-
-          <line x1={paddingLeft} y1={height - paddingBottom} x2={width - paddingRight} y2={height - paddingBottom} stroke="#78716c" strokeWidth="1" />
-          <line x1={paddingLeft} y1={paddingTop} x2={paddingLeft} y2={height - paddingBottom} stroke="#78716c" strokeWidth="1" />
-
-          <path d={restorerPoints} fill="none" stroke="#6366f1" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-          <path d={colorizerPoints} fill="none" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-
-          {trainingState.epochs.map((e, idx) => (
-            <g key={idx}>
-              <circle cx={getX(idx)} cy={getY(e.restorer_loss)} r="3" fill="#6366f1" stroke="#fff" strokeWidth="1" />
-              <circle cx={getX(idx)} cy={getY(e.colorizer_loss)} r="3" fill="#f59e0b" stroke="#fff" strokeWidth="1" />
-            </g>
-          ))}
-        </svg>
+            ))}
+          </svg>
+        </div>
       </div>
     );
   };
@@ -298,7 +302,7 @@ export default function WeightsAdmin() {
   const renderAccuracyChart = () => {
     if (!trainingState.epochs || trainingState.epochs.length === 0) {
       return (
-        <div className="flex items-center justify-center h-48 text-stone-400 text-sm border border-stone-200 rounded-xl bg-stone-50">
+        <div className="flex items-center justify-center h-48 text-stone-400 text-xs sm:text-sm border border-stone-200 rounded-xl bg-stone-50 p-4 text-center">
           No training metrics logged yet.
         </div>
       );
@@ -343,49 +347,51 @@ export default function WeightsAdmin() {
 
     return (
       <div className="flex flex-col w-full">
-        <div className="flex items-center justify-center gap-4 text-xs mb-3 font-semibold">
-          <span className="flex items-center gap-1.5 text-indigo-600"><span className="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>Restorer Acc</span>
-          <span className="flex items-center gap-1.5 text-amber-500"><span className="w-2.5 h-2.5 rounded-full bg-amber-500"></span>Colorizer Acc</span>
-          <span className="flex items-center gap-1.5 text-emerald-500"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>Combined Acc</span>
+        <div className="flex flex-wrap items-center justify-center gap-3 sm:gap-4 text-xs mb-3 font-semibold">
+          <span className="flex items-center gap-1.5 text-indigo-600"><span className="w-2.5 h-2.5 rounded-full bg-indigo-500 shrink-0"></span>Restorer Acc</span>
+          <span className="flex items-center gap-1.5 text-amber-600"><span className="w-2.5 h-2.5 rounded-full bg-amber-500 shrink-0"></span>Colorizer Acc</span>
+          <span className="flex items-center gap-1.5 text-emerald-600"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0"></span>Combined Acc</span>
         </div>
-        <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto bg-stone-50/50 border border-stone-200 rounded-xl p-2">
-          {[50, 62.5, 75, 87.5, 100].map((yVal, i) => {
-            const y = getY(yVal);
-            return (
-              <g key={i} className="opacity-40">
-                <line x1={paddingLeft} y1={y} x2={width - paddingRight} y2={y} stroke="#d6d3d1" strokeDasharray="3 3" />
-                <text x={paddingLeft - 8} y={y + 4} textAnchor="end" className="text-[10px] font-mono fill-stone-500">{yVal.toFixed(0)}%</text>
-              </g>
-            );
-          })}
+        <div className="w-full overflow-x-auto touch-scroll-x">
+          <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto min-w-[280px] bg-stone-50/50 border border-stone-200 rounded-xl p-2">
+            {[50, 62.5, 75, 87.5, 100].map((yVal, i) => {
+              const y = getY(yVal);
+              return (
+                <g key={i} className="opacity-40">
+                  <line x1={paddingLeft} y1={y} x2={width - paddingRight} y2={y} stroke="#d6d3d1" strokeDasharray="3 3" />
+                  <text x={paddingLeft - 8} y={y + 4} textAnchor="end" className="text-[10px] font-mono fill-stone-500">{yVal.toFixed(0)}%</text>
+                </g>
+              );
+            })}
 
-          {trainingState.epochs.map((e, idx) => {
-            const x = getX(idx);
-            return (
+            {trainingState.epochs.map((e, idx) => {
+              const x = getX(idx);
+              return (
+                <g key={idx}>
+                  {idx > 0 && idx < 9 && (
+                    <line x1={x} y1={paddingTop} x2={x} y2={height - paddingBottom} stroke="#e7e5e4" strokeDasharray="3 3" className="opacity-20" />
+                  )}
+                  <text x={x} y={height - paddingBottom + 16} textAnchor="middle" className="text-[10px] font-mono fill-stone-500">E{e.epoch}</text>
+                </g>
+              );
+            })}
+
+            <line x1={paddingLeft} y1={height - paddingBottom} x2={width - paddingRight} y2={height - paddingBottom} stroke="#78716c" strokeWidth="1" />
+            <line x1={paddingLeft} y1={paddingTop} x2={paddingLeft} y2={height - paddingBottom} stroke="#78716c" strokeWidth="1" />
+
+            <path d={restorerPoints} fill="none" stroke="#6366f1" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            <path d={colorizerPoints} fill="none" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            <path d={combinedPoints} fill="none" stroke="#10b981" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+
+            {trainingState.epochs.map((e, idx) => (
               <g key={idx}>
-                {idx > 0 && idx < 9 && (
-                  <line x1={x} y1={paddingTop} x2={x} y2={height - paddingBottom} stroke="#e7e5e4" strokeDasharray="3 3" className="opacity-20" />
-                )}
-                <text x={x} y={height - paddingBottom + 16} textAnchor="middle" className="text-[10px] font-mono fill-stone-500">E{e.epoch}</text>
+                <circle cx={getX(idx)} cy={getY(e.restorer_accuracy)} r="3" fill="#6366f1" stroke="#fff" strokeWidth="1" />
+                <circle cx={getX(idx)} cy={getY(e.colorizer_f1 * 100)} r="3" fill="#f59e0b" stroke="#fff" strokeWidth="1" />
+                <circle cx={getX(idx)} cy={getY(e.combined_accuracy)} r="3" fill="#10b981" stroke="#fff" strokeWidth="1" />
               </g>
-            );
-          })}
-
-          <line x1={paddingLeft} y1={height - paddingBottom} x2={width - paddingRight} y2={height - paddingBottom} stroke="#78716c" strokeWidth="1" />
-          <line x1={paddingLeft} y1={paddingTop} x2={paddingLeft} y2={height - paddingBottom} stroke="#78716c" strokeWidth="1" />
-
-          <path d={restorerPoints} fill="none" stroke="#6366f1" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-          <path d={colorizerPoints} fill="none" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-          <path d={combinedPoints} fill="none" stroke="#10b981" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-
-          {trainingState.epochs.map((e, idx) => (
-            <g key={idx}>
-              <circle cx={getX(idx)} cy={getY(e.restorer_accuracy)} r="3" fill="#6366f1" stroke="#fff" strokeWidth="1" />
-              <circle cx={getX(idx)} cy={getY(e.colorizer_f1 * 100)} r="3" fill="#f59e0b" stroke="#fff" strokeWidth="1" />
-              <circle cx={getX(idx)} cy={getY(e.combined_accuracy)} r="3" fill="#10b981" stroke="#fff" strokeWidth="1" />
-            </g>
-          ))}
-        </svg>
+            ))}
+          </svg>
+        </div>
       </div>
     );
   };
@@ -536,7 +542,6 @@ export default function WeightsAdmin() {
       
       setSelectedIds(prev => prev.filter(id => id !== pairId));
       
-      // Handle page decrement if last element on last page was deleted
       if (pairs.length === 1 && currentPage > 1) {
         setCurrentPage(prev => prev - 1);
       } else {
@@ -559,7 +564,6 @@ export default function WeightsAdmin() {
       setMsg(`Successfully deleted ${selectedIds.length} image pairs.`);
       setSelectedIds([]);
       
-      // Reset page calculation if needed
       const remainingTotal = totalPairs - selectedIds.length;
       const expectedTotalPages = Math.max(1, Math.ceil(remainingTotal / 6));
       const targetPage = currentPage > expectedTotalPages ? expectedTotalPages : currentPage;
@@ -600,150 +604,166 @@ export default function WeightsAdmin() {
   };
 
   return (
-    <div className="admin-page-container flex flex-col pt-4 w-full">
-      <div className="w-full px-4 md:px-12 lg:px-24 py-8 flex-grow">
+    <div className="admin-page-container flex flex-col pt-2 sm:pt-4 w-full">
+      <div className="w-full max-w-7xl mx-auto px-3.5 sm:px-6 md:px-10 lg:px-12 py-4 sm:py-8 flex-grow">
         
-        {/* Header */}
+        {/* Header Navigation */}
         <button 
           onClick={() => navigate('/')}
-          className="flex items-center gap-2 text-stone-500 hover:text-stone-900 transition-colors mb-8 font-medium text-sm w-fit"
+          className="flex items-center gap-2 text-stone-600 hover:text-stone-900 active:text-black transition-colors mb-4 sm:mb-8 font-medium text-xs sm:text-sm w-fit min-h-[44px] px-1"
         >
-          <ArrowLeft className="w-4 h-4" /> Back to Application
+          <ArrowLeft className="w-4 h-4 shrink-0" /> Back to Application
         </button>
 
-        <div className="mb-12">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full dev-badge text-xs font-mono mb-4">
-            <TerminalSquare className="w-3 h-3" />
+        <div className="mb-8 sm:mb-12">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full dev-badge text-[11px] sm:text-xs font-mono mb-3 sm:mb-4">
+            <TerminalSquare className="w-3.5 h-3.5 shrink-0" />
             ADMINISTRATION_ACCESS
           </div>
-          <h1 className="text-4xl md:text-5xl font-serif text-stone-900 mb-4 tracking-tight">
-            Weights & Dataset Administration
+          <h1 className="text-2xl sm:text-4xl md:text-5xl font-serif text-stone-900 mb-3 tracking-tight">
+            Weights &amp; Dataset Administration
           </h1>
-          <p className="text-stone-600 leading-relaxed text-lg w-full max-w-none">
+          <p className="text-xs sm:text-sm md:text-base text-stone-600 leading-relaxed max-w-3xl">
             Hot-swap the offline PyTorch <code>.pth</code> models or manage custom image training datasets to power the AI colorization and restoration engines.
           </p>
         </div>
 
         {/* Global Message Alert */}
         {msg && (
-          <div className={`mb-8 p-4 rounded-xl border flex items-center gap-3 ${msg.includes('Failed') || msg.includes('Invalid') || msg.includes('Error') ? 'bg-red-50 border-red-200 text-red-700' : 'bg-emerald-50 border-emerald-200 text-emerald-700'}`}>
+          <div className={`mb-6 sm:mb-8 p-3.5 sm:p-4 rounded-xl border flex items-center gap-3 text-xs sm:text-sm ${msg.includes('Failed') || msg.includes('Invalid') || msg.includes('Error') ? 'bg-red-50 border-red-200 text-red-700' : 'bg-emerald-50 border-emerald-200 text-emerald-700'}`}>
             {msg.includes('Failed') || msg.includes('Invalid') || msg.includes('Error') ? <AlertCircle className="w-5 h-5 shrink-0" /> : <CheckCircle className="w-5 h-5 shrink-0" />}
-            <p className="font-medium">{msg}</p>
+            <p className="font-medium leading-relaxed">{msg}</p>
           </div>
         )}
 
         {/* Weights Swap Section */}
-        <div className="mb-16">
-          <h2 className="text-2xl font-serif text-stone-900 tracking-wide mb-6 pb-2 border-b border-stone-200">
+        <div className="mb-10 sm:mb-16">
+          <h2 className="text-xl sm:text-2xl font-serif text-stone-900 tracking-wide mb-4 sm:mb-6 pb-2 border-b border-stone-200">
             Model Weights Hot-Swap
           </h2>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 sm:gap-8">
             
             {/* RealESRGAN Zone */}
-            <div className="cream-card p-8 flex flex-col">
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-xl font-serif text-stone-900 tracking-wide">Restoration</h2>
-                <span className="bg-stone-100 text-stone-600 text-xs px-3 py-1 rounded-full font-mono border border-stone-200">RealESRGAN_x4plus.pth</span>
-              </div>
-              
-              <div className="architecture-details p-5 mb-8 flex-grow">
-                <ul className="text-sm text-stone-600 space-y-3">
-                  <li className="flex justify-between items-center border-b border-stone-200 pb-2">
-                    <span>Architecture</span> <strong className="text-stone-800">RealESRGAN (RRDB x23)</strong>
-                  </li>
-                  <li className="flex justify-between items-center border-b border-stone-200 pb-2">
-                    <span>Target Task</span> <strong className="text-stone-800">Denoising & 4x Upscaling</strong>
-                  </li>
-                  <li className="flex justify-between items-center border-b border-stone-200 pb-2">
-                    <span>Weight File</span>
-                    {weightsStatus?.restorer?.file_exists ? (
-                      <span className="text-emerald-700 font-semibold flex items-center gap-1"><CheckCircle className="w-3.5 h-3.5" /> Present</span>
-                    ) : (
-                      <span className="text-red-600 font-semibold flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" /> Missing</span>
-                    )}
-                  </li>
-                  <li className="flex justify-between items-center">
-                    <span>Memory Status</span>
-                    {weightsStatus?.restorer?.loaded ? (
-                      <span className="relative flex items-center gap-2 text-emerald-700 font-semibold">
-                        <span className="flex h-2 w-2 relative">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                          <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+            <div className="cream-card p-4 sm:p-6 lg:p-8 flex flex-col justify-between">
+              <div>
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-4 sm:mb-6">
+                  <h3 className="text-lg sm:text-xl font-serif text-stone-900 tracking-wide">Restoration (RealESRGAN)</h3>
+                  <span className="bg-stone-100 text-stone-600 text-xs px-2.5 py-1 rounded-full font-mono border border-stone-200 shrink-0">
+                    RealESRGAN_x4plus.pth
+                  </span>
+                </div>
+                
+                <div className="architecture-details p-3.5 sm:p-5 mb-6">
+                  <ul className="text-xs sm:text-sm text-stone-600 space-y-2.5">
+                    <li className="flex justify-between items-center border-b border-stone-200/60 pb-2">
+                      <span>Architecture</span> <strong className="text-stone-800">RRDBNet (x4plus)</strong>
+                    </li>
+                    <li className="flex justify-between items-center border-b border-stone-200/60 pb-2">
+                      <span>Target Task</span> <strong className="text-stone-800">4&times; Super-Resolution</strong>
+                    </li>
+                    <li className="flex justify-between items-center border-b border-stone-200/60 pb-2">
+                      <span>Weight File</span>
+                      {weightsStatus?.restorer?.file_exists ? (
+                        <span className="text-emerald-700 font-semibold flex items-center gap-1"><CheckCircle className="w-3.5 h-3.5" /> Present</span>
+                      ) : (
+                        <span className="text-red-600 font-semibold flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" /> Missing</span>
+                      )}
+                    </li>
+                    <li className="flex justify-between items-center">
+                      <span>Memory Status</span>
+                      {weightsStatus?.restorer?.loaded ? (
+                        <span className="relative flex items-center gap-1.5 text-emerald-700 font-semibold">
+                          <span className="flex h-2 w-2 relative">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                          </span>
+                          Active ({weightsStatus.restorer.device})
                         </span>
-                        Active ({weightsStatus.restorer.device})
-                      </span>
-                    ) : (
-                      <span className="text-red-600 font-semibold flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" /> Not Active</span>
-                    )}
-                  </li>
-                </ul>
+                      ) : (
+                        <span className="text-red-600 font-semibold flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" /> Not Active</span>
+                      )}
+                    </li>
+                  </ul>
+                </div>
               </div>
               
               <div 
                 onDragOver={onDragOver} 
-                onDrop={(e) => handleDrop(e, 'realesrgan')}
-                className={`drop-zone p-8 flex flex-col items-center justify-center text-center cursor-pointer ${restorerStatus}`}
+                onDrop={(e) => handleDrop(e, 'restorer')}
+                className={`drop-zone p-6 sm:p-8 flex flex-col items-center justify-center text-center cursor-pointer transition-all ${restorerStatus}`}
               >
-                <input type="file" id="realesrgan-upload" className="hidden" accept=".pth" onChange={(e) => handleDrop(e, 'realesrgan')} />
-                <label htmlFor="realesrgan-upload" className="cursor-pointer flex flex-col items-center w-full h-full">
+                <input 
+                  type="file" 
+                  id="restorer-upload" 
+                  className="hidden" 
+                  accept=".pth" 
+                  onChange={(e) => handleDrop(e, 'restorer')} 
+                />
+                <label htmlFor="restorer-upload" className="cursor-pointer flex flex-col items-center w-full min-h-[44px]">
                   {restorerStatus === 'uploading' ? (
-                    <div className="w-10 h-10 border-4 border-stone-200 border-t-indigo-500 rounded-full animate-spin mb-4"></div>
+                    <div className="w-8 h-8 sm:w-10 sm:h-10 border-4 border-stone-200 border-t-indigo-500 rounded-full animate-spin mb-3"></div>
                   ) : restorerStatus === 'success' ? (
-                    <CheckCircle className="w-10 h-10 text-emerald-500 mb-4 scale-110 transition-transform" />
+                    <CheckCircle className="w-8 h-8 sm:w-10 sm:h-10 text-emerald-500 mb-3" />
                   ) : (
-                    <UploadCloud className={`w-10 h-10 mb-4 ${restorerStatus === 'error' ? 'text-red-400' : 'text-stone-400'}`} />
+                    <UploadCloud className={`w-8 h-8 sm:w-10 sm:h-10 mb-3 ${restorerStatus === 'error' ? 'text-red-400' : 'text-stone-400'}`} />
                   )}
-                  <span className="font-semibold text-stone-800 text-base mb-1">{restorerStatus === 'uploading' ? 'Injecting Weights...' : 'Drop RealESRGAN_x4plus.pth'}</span>
-                  <span className="text-xs text-stone-500">or click to browse local files</span>
+                  <span className="font-semibold text-stone-800 text-sm sm:text-base mb-1">
+                    {restorerStatus === 'uploading' ? 'Uploading & Reloading Weights...' : 'Drop RealESRGAN Weights (.pth)'}
+                  </span>
+                  <span className="text-xs text-stone-500">or click to browse local filesystem</span>
                 </label>
               </div>
             </div>
 
-            {/* DDColor colorizer status */}
-            <div className="cream-card p-8 flex flex-col">
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-xl font-serif text-stone-900 tracking-wide">Colorization</h2>
-                <span className="bg-stone-100 text-stone-600 text-xs px-3 py-1 rounded-full font-mono border border-stone-200">DDColor</span>
-              </div>
-              
-              <div className="architecture-details p-5 mb-8 flex-grow">
-                <ul className="text-sm text-stone-600 space-y-3">
-                  <li className="flex justify-between items-center border-b border-stone-200 pb-2">
-                    <span>Architecture</span> <strong className="text-stone-800">DDColor (ICCV 2023)</strong>
-                  </li>
-                  <li className="flex justify-between items-center border-b border-stone-200 pb-2">
-                    <span>Target Task</span> <strong className="text-stone-800">B&W to Natural Color</strong>
-                  </li>
-                  <li className="flex justify-between items-center border-b border-stone-200 pb-2">
-                    <span>Weight File</span>
-                    {weightsStatus?.colorizer?.file_exists ? (
-                      <span className="text-emerald-700 font-semibold flex items-center gap-1"><CheckCircle className="w-3.5 h-3.5" /> Present</span>
-                    ) : (
-                      <span className="text-red-600 font-semibold flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" /> Missing</span>
-                    )}
-                  </li>
-                  <li className="flex justify-between items-center">
-                    <span>Memory Status</span>
-                    {weightsStatus?.colorizer?.loaded ? (
-                      <span className="relative flex items-center gap-2 text-emerald-700 font-semibold">
-                        <span className="flex h-2 w-2 relative">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                          <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+            {/* DDColor Colorizer Zone */}
+            <div className="cream-card p-4 sm:p-6 lg:p-8 flex flex-col justify-between">
+              <div>
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-4 sm:mb-6">
+                  <h3 className="text-lg sm:text-xl font-serif text-stone-900 tracking-wide">Colorization (DDColor)</h3>
+                  <span className="bg-stone-100 text-stone-600 text-xs px-2.5 py-1 rounded-full font-mono border border-stone-200 shrink-0">
+                    DDColor
+                  </span>
+                </div>
+                
+                <div className="architecture-details p-3.5 sm:p-5 mb-6">
+                  <ul className="text-xs sm:text-sm text-stone-600 space-y-2.5">
+                    <li className="flex justify-between items-center border-b border-stone-200/60 pb-2">
+                      <span>Architecture</span> <strong className="text-stone-800">DDColor (ICCV 2023)</strong>
+                    </li>
+                    <li className="flex justify-between items-center border-b border-stone-200/60 pb-2">
+                      <span>Target Task</span> <strong className="text-stone-800">B&amp;W to Natural Color</strong>
+                    </li>
+                    <li className="flex justify-between items-center border-b border-stone-200/60 pb-2">
+                      <span>Weight File</span>
+                      {weightsStatus?.colorizer?.file_exists ? (
+                        <span className="text-emerald-700 font-semibold flex items-center gap-1"><CheckCircle className="w-3.5 h-3.5" /> Present</span>
+                      ) : (
+                        <span className="text-red-600 font-semibold flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" /> Missing</span>
+                      )}
+                    </li>
+                    <li className="flex justify-between items-center">
+                      <span>Memory Status</span>
+                      {weightsStatus?.colorizer?.loaded ? (
+                        <span className="relative flex items-center gap-1.5 text-emerald-700 font-semibold">
+                          <span className="flex h-2 w-2 relative">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                          </span>
+                          Active ({weightsStatus.colorizer.device})
                         </span>
-                        Active ({weightsStatus.colorizer.device})
-                      </span>
-                    ) : (
-                      <span className="text-red-600 font-semibold flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" /> Not Active</span>
-                    )}
-                  </li>
-                </ul>
+                      ) : (
+                        <span className="text-red-600 font-semibold flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" /> Not Active</span>
+                      )}
+                    </li>
+                  </ul>
+                </div>
               </div>
               
-              <div className="p-6 text-center text-sm text-stone-500 bg-stone-50 rounded-xl border border-stone-200">
-                <Cpu className="w-8 h-8 mx-auto mb-3 text-stone-400" />
-                <p className="font-medium text-stone-700 mb-1">Auto-loaded Model</p>
-                <p>DDColor weights load automatically from <code className="text-xs bg-stone-100 px-1 py-0.5 rounded">ai/weights/ddcolor/</code>.</p>
-                <p className="mt-1">Run <code className="text-xs bg-stone-100 px-1 py-0.5 rounded">python backend/ai/install_ddcolor.py</code> to download (~870 MB).</p>
+              <div className="p-4 sm:p-6 text-center text-xs sm:text-sm text-stone-500 bg-stone-50 rounded-xl border border-stone-200">
+                <Cpu className="w-7 h-7 sm:w-8 sm:h-8 mx-auto mb-2.5 text-stone-400" />
+                <p className="font-semibold text-stone-800 mb-1">Auto-loaded Model</p>
+                <p className="leading-relaxed">DDColor weights load automatically from <code className="text-[11px] bg-stone-100 px-1 py-0.5 rounded">ai/weights/ddcolor/</code>.</p>
+                <p className="mt-1 leading-relaxed">Run <code className="text-[11px] bg-stone-100 px-1 py-0.5 rounded">python backend/ai/install_ddcolor.py</code> to download (~870 MB).</p>
               </div>
             </div>
 
@@ -751,35 +771,35 @@ export default function WeightsAdmin() {
         </div>
 
         {/* Automatic Model Training Dashboard */}
-        <div className="mb-16">
-          <h2 className="text-2xl font-serif text-stone-900 tracking-wide mb-6 pb-2 border-b border-stone-200 flex items-center justify-between">
+        <div className="mb-10 sm:mb-16">
+          <h2 className="text-xl sm:text-2xl font-serif text-stone-900 tracking-wide mb-4 sm:mb-6 pb-2 border-b border-stone-200 flex flex-wrap items-center justify-between gap-2">
             <span>Automatic Model Training Dashboard</span>
-            <span className="text-xs bg-stone-100 border border-stone-200 text-stone-500 font-mono px-2 py-0.5 rounded uppercase">
+            <span className="text-xs bg-stone-100 border border-stone-200 text-stone-600 font-mono px-2.5 py-1 rounded-full uppercase">
               Pipeline: {trainingState.status}
             </span>
           </h2>
           
-          <div className="grid grid-cols-1 xl:grid-cols-3 gap-8 mb-8">
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 sm:gap-8 mb-8">
             
             {/* Control Panel Card */}
-            <div className="cream-card p-6 flex flex-col justify-between h-full">
+            <div className="cream-card p-4 sm:p-6 flex flex-col justify-between">
               <div>
-                <h3 className="text-lg font-serif text-stone-800 mb-3 flex items-center gap-2">
-                  <Cpu className="w-5 h-5 text-indigo-500" /> Pipeline Controls
+                <h3 className="text-base sm:text-lg font-serif text-stone-800 mb-2 flex items-center gap-2">
+                  <Cpu className="w-5 h-5 text-indigo-500 shrink-0" /> Pipeline Controls
                 </h3>
-                <p className="text-xs text-stone-500 mb-6">
-                  Run the RealESRGAN benchmark pipeline. The system measures real PSNR on sample patches from the H5 dataset and reports how much quality gain RealESRGAN achieves over bicubic upscaling.
+                <p className="text-xs text-stone-600 mb-4 sm:mb-6 leading-relaxed">
+                  Run the RealESRGAN benchmark pipeline. Measures real PSNR on sample patches from the H5 dataset and reports quality gain over bicubic upscaling.
                 </p>
                 
                 {/* Active Dataset Stats */}
-                <div className="grid grid-cols-2 gap-4 mb-6">
+                <div className="grid grid-cols-2 gap-3 mb-6">
                   <div className="bg-stone-50 border border-stone-200 rounded-lg p-3 text-center">
                     <span className="block text-[10px] uppercase tracking-wider text-stone-400 font-semibold mb-1">Dataset Size</span>
-                    <strong className="text-xl text-stone-800 font-serif">{totalPairs} Pairs</strong>
+                    <strong className="text-lg sm:text-xl text-stone-800 font-serif">{totalPairs} Pairs</strong>
                   </div>
                   <div className="bg-stone-50 border border-stone-200 rounded-lg p-3 text-center">
                     <span className="block text-[10px] uppercase tracking-wider text-stone-400 font-semibold mb-1">Status</span>
-                    <strong className="text-sm text-stone-700 capitalize flex items-center justify-center gap-1.5 mt-1">
+                    <strong className="text-xs sm:text-sm text-stone-700 capitalize flex items-center justify-center gap-1.5 mt-1">
                       {trainingState.status === 'running' ? (
                         <>
                           <span className="relative flex h-2 w-2">
@@ -801,13 +821,15 @@ export default function WeightsAdmin() {
                 </div>
               </div>
               
-              {/* Progress/Trigger area */}
-              <div className="mt-4 space-y-4">
+              {/* Progress / Trigger area */}
+              <div className="mt-2 space-y-4">
                 {trainingState.status === 'running' && (
                   <div className="space-y-2">
                     <div className="flex justify-between items-center text-xs">
-                      <span className="text-stone-500 font-medium truncate max-w-[200px]" title={trainingState.message}>{trainingState.message}</span>
-                      <span className="text-indigo-600 font-bold">{trainingState.progress}%</span>
+                      <span className="text-stone-500 font-medium truncate max-w-[200px]" title={trainingState.message}>
+                        {trainingState.message}
+                      </span>
+                      <span className="text-indigo-600 font-bold ml-2">{trainingState.progress}%</span>
                     </div>
                     <div className="w-full bg-stone-200 rounded-full h-2.5 overflow-hidden shadow-inner">
                       <div 
@@ -819,17 +841,20 @@ export default function WeightsAdmin() {
                 )}
                 
                 <button
+                  type="button"
                   onClick={handleStartTraining}
                   disabled={isTraining || totalPairs === 0}
-                  className="w-full bg-stone-950 hover:bg-stone-800 disabled:bg-stone-100 disabled:text-stone-400 border border-transparent disabled:border-stone-200 text-stone-100 font-semibold py-3 px-4 rounded-xl transition-all shadow-md hover:shadow-lg flex items-center justify-center gap-2 text-sm cursor-pointer"
+                  className="w-full bg-stone-950 hover:bg-stone-800 disabled:bg-stone-100 disabled:text-stone-400 border border-transparent disabled:border-stone-200 text-stone-100 font-semibold py-3 px-4 rounded-xl transition-all shadow-sm flex items-center justify-center gap-2 text-xs sm:text-sm cursor-pointer min-h-[44px]"
                 >
                   {isTraining ? (
                     <>
-                      <RefreshCw className="w-4 h-4 animate-spin" /> Running Pipeline...
+                      <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
+                      <span>Running Pipeline...</span>
                     </>
                   ) : (
                     <>
-                      <Cpu className="w-4 h-4" /> Start Training Pipeline
+                      <Cpu className="w-4 h-4 shrink-0" />
+                      <span>Start Training Pipeline</span>
                     </>
                   )}
                 </button>
@@ -837,17 +862,17 @@ export default function WeightsAdmin() {
             </div>
 
             {/* Terminal Live Output logs */}
-            <div className="xl:col-span-2 cream-card p-6 flex flex-col h-full min-h-[300px]">
+            <div className="xl:col-span-2 cream-card p-4 sm:p-6 flex flex-col min-h-[260px]">
               <div className="flex items-center justify-between mb-3 border-b border-stone-200 pb-2.5">
-                <h3 className="text-lg font-serif text-stone-800 flex items-center gap-2">
-                  <TerminalSquare className="w-5 h-5 text-stone-600" /> Training Terminal Output
+                <h3 className="text-base sm:text-lg font-serif text-stone-800 flex items-center gap-2">
+                  <TerminalSquare className="w-4 h-4 sm:w-5 sm:h-5 text-stone-600 shrink-0" /> Training Terminal Output
                 </h3>
                 <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" title="System online"></span>
               </div>
               
-              <div className="training-terminal flex-grow p-4 text-xs text-stone-300 font-mono overflow-y-auto max-h-[220px] rounded-lg space-y-1.5 scrollbar-thin">
+              <div className="training-terminal flex-grow p-3 sm:p-4 text-[11px] sm:text-xs text-stone-300 font-mono overflow-y-auto max-h-[220px] rounded-lg space-y-1.5 touch-scroll-y">
                 {terminalLogs.length === 0 ? (
-                  <div className="text-stone-500 italic text-center py-12">
+                  <div className="text-stone-500 italic text-center py-10">
                     Terminal idle. Click "Start Training Pipeline" to spawn training logs.
                   </div>
                 ) : (
@@ -874,61 +899,61 @@ export default function WeightsAdmin() {
 
           {/* Results dashboard & SVG Graphs */}
           {trainingState.epochs.length > 0 && (
-            <div className="space-y-8 mt-8">
+            <div className="space-y-6 sm:space-y-8 mt-6 sm:mt-8">
               
               {/* Metrics Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 sm:gap-6">
                 
                 {/* Restorer Card */}
-                <div className="cream-card p-6 border-l-4 border-l-indigo-500">
-                  <h4 className="font-serif text-lg text-stone-800 mb-4">Restorer Model (RealESRGAN)</h4>
-                  <div className="space-y-3">
+                <div className="cream-card p-4 sm:p-6 border-l-4 border-l-indigo-500">
+                  <h4 className="font-serif text-base sm:text-lg text-stone-800 mb-3">Restorer Model (RealESRGAN)</h4>
+                  <div className="space-y-2.5 text-xs sm:text-sm">
                     <div className="flex justify-between items-center border-b border-stone-100 pb-1.5">
-                      <span className="text-xs text-stone-500 font-medium">Evaluation Accuracy</span>
+                      <span className="text-stone-500 font-medium">Evaluation Accuracy</span>
                       <strong className="text-stone-800">{trainingState.results?.restorer_accuracy ? `${trainingState.results.restorer_accuracy}%` : 'Evaluating...'}</strong>
                     </div>
                     <div className="flex justify-between items-center border-b border-stone-100 pb-1.5">
-                      <span className="text-xs text-stone-500 font-medium">Peak SNR (PSNR)</span>
+                      <span className="text-stone-500 font-medium">Peak SNR (PSNR)</span>
                       <strong className="text-stone-800">{trainingState.results?.restorer_psnr ? `${trainingState.results.restorer_psnr} dB` : 'Calculating...'}</strong>
                     </div>
                     <div className="flex justify-between items-center">
-                      <span className="text-xs text-stone-500 font-medium">MSE Training Loss</span>
+                      <span className="text-stone-500 font-medium">MSE Training Loss</span>
                       <strong className="text-stone-800">{trainingState.results?.restorer_mse ? trainingState.results.restorer_mse.toFixed(4) : 'Running...'}</strong>
                     </div>
                   </div>
                 </div>
 
                 {/* Colorizer Card */}
-                <div className="cream-card p-6 border-l-4 border-l-amber-500">
-                  <h4 className="font-serif text-lg text-stone-800 mb-4">Colorizer Model (DDColor)</h4>
-                  <div className="space-y-3">
+                <div className="cream-card p-4 sm:p-6 border-l-4 border-l-amber-500">
+                  <h4 className="font-serif text-base sm:text-lg text-stone-800 mb-3">Colorizer Model (DDColor)</h4>
+                  <div className="space-y-2.5 text-xs sm:text-sm">
                     <div className="flex justify-between items-center border-b border-stone-100 pb-1.5">
-                      <span className="text-xs text-stone-500 font-medium">Evaluation Accuracy</span>
+                      <span className="text-stone-500 font-medium">Evaluation Accuracy</span>
                       <strong className="text-stone-800">{trainingState.results?.colorizer_accuracy ? `${trainingState.results.colorizer_accuracy}%` : 'Evaluating...'}</strong>
                     </div>
                     <div className="flex justify-between items-center border-b border-stone-100 pb-1.5">
-                      <span className="text-xs text-stone-500 font-medium">F1 Score (ab Channels)</span>
+                      <span className="text-stone-500 font-medium">F1 Score (ab Channels)</span>
                       <strong className="text-stone-800">{trainingState.results?.colorizer_f1 ? trainingState.results.colorizer_f1.toFixed(3) : 'Calculating...'}</strong>
                     </div>
                     <div className="flex justify-between items-center">
-                      <span className="text-xs text-stone-500 font-medium">Cross-Entropy Loss</span>
+                      <span className="text-stone-500 font-medium">Cross-Entropy Loss</span>
                       <strong className="text-stone-800">{trainingState.results?.colorizer_loss ? trainingState.results.colorizer_loss.toFixed(4) : 'Running...'}</strong>
                     </div>
                   </div>
                 </div>
 
                 {/* Combined Pipeline Card */}
-                <div className="cream-card p-6 border-l-4 border-l-emerald-500 bg-emerald-50/5">
-                  <h4 className="font-serif text-lg text-stone-800 mb-4">Combined AI Engine</h4>
-                  <div className="space-y-4">
-                    <div className="text-center py-2 bg-stone-50 border border-stone-200 rounded-lg">
+                <div className="cream-card p-4 sm:p-6 border-l-4 border-l-emerald-500 bg-emerald-50/10 sm:col-span-2 md:col-span-1">
+                  <h4 className="font-serif text-base sm:text-lg text-stone-800 mb-3">Combined AI Engine</h4>
+                  <div className="space-y-3">
+                    <div className="text-center py-2.5 bg-stone-50 border border-stone-200 rounded-lg">
                       <span className="block text-[10px] uppercase font-semibold tracking-wider text-stone-400">Total Combined Accuracy</span>
-                      <strong className="text-3xl text-emerald-600 font-serif font-bold mt-1 block">
+                      <strong className="text-2xl sm:text-3xl text-emerald-600 font-serif font-bold mt-1 block">
                         {trainingState.results?.combined_accuracy ? `${trainingState.results.combined_accuracy}%` : 'Calculating...'}
                       </strong>
                     </div>
-                    <p className="text-[10px] text-stone-400 text-center leading-relaxed">
-                      Weighted metrics: 55% Restorer resolution + 45% Colorizer chromatic mapping.
+                    <p className="text-[11px] text-stone-500 text-center leading-relaxed">
+                      Weighted: 55% Restorer resolution + 45% Colorizer chromatic mapping.
                     </p>
                   </div>
                 </div>
@@ -936,20 +961,16 @@ export default function WeightsAdmin() {
               </div>
 
               {/* Loss and Accuracy Graphs Grid */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                
-                {/* Loss Curves */}
-                <div className="cream-card p-6">
-                  <h3 className="text-lg font-serif text-stone-800 mb-4">Training Loss Convergence Curves</h3>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 sm:gap-8">
+                <div className="cream-card p-4 sm:p-6">
+                  <h3 className="text-base sm:text-lg font-serif text-stone-800 mb-3 sm:mb-4">Training Loss Convergence Curves</h3>
                   {renderLossChart()}
                 </div>
 
-                {/* Accuracy Curves */}
-                <div className="cream-card p-6">
-                  <h3 className="text-lg font-serif text-stone-800 mb-4">Validation Accuracy Progression</h3>
+                <div className="cream-card p-4 sm:p-6">
+                  <h3 className="text-base sm:text-lg font-serif text-stone-800 mb-3 sm:mb-4">Validation Accuracy Progression</h3>
                   {renderAccuracyChart()}
                 </div>
-
               </div>
 
             </div>
@@ -957,42 +978,44 @@ export default function WeightsAdmin() {
         </div>
 
         {/* Training Dataset Manager Section */}
-        <div className="mb-16">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6 pb-2 border-b border-stone-200">
+        <div className="mb-10 sm:mb-16">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 sm:mb-6 pb-2 border-b border-stone-200">
             <div>
-              <h2 className="text-2xl font-serif text-stone-900 tracking-wide">
+              <h2 className="text-xl sm:text-2xl font-serif text-stone-900 tracking-wide">
                 Training Dataset Manager
               </h2>
-              <p className="text-sm text-stone-500 mt-1">
+              <p className="text-xs sm:text-sm text-stone-500 mt-0.5">
                 Upload image archives or add individual paired datasets to train and tune restoration models.
               </p>
             </div>
             
             <button 
+              type="button"
               onClick={() => setShowAddForm(!showAddForm)}
-              className="flex items-center gap-2 bg-stone-900 hover:bg-stone-800 text-stone-100 px-4 py-2 rounded-lg font-medium text-sm transition-colors self-start md:self-center"
+              className="flex items-center gap-2 bg-stone-900 hover:bg-stone-800 active:bg-black text-stone-100 px-3.5 py-2.5 rounded-lg font-medium text-xs sm:text-sm transition-colors self-start sm:self-center min-h-[44px] cursor-pointer"
             >
-              <Plus className="w-4 h-4" /> {showAddForm ? 'Cancel Direct Upload' : 'Add Single Pair'}
+              <Plus className="w-4 h-4 shrink-0" />
+              <span>{showAddForm ? 'Cancel Direct Upload' : 'Add Single Pair'}</span>
             </button>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 sm:gap-8 mb-8">
             
             {/* ZIP Drag and Drop Uploader */}
-            <div className="lg:col-span-2 cream-card p-6 flex flex-col justify-between">
+            <div className="lg:col-span-2 cream-card p-4 sm:p-6 flex flex-col justify-between">
               <div>
-                <h3 className="text-lg font-serif text-stone-800 mb-2 flex items-center gap-2">
-                  <FileArchive className="w-5 h-5 text-stone-600" /> Upload Dataset ZIP
+                <h3 className="text-base sm:text-lg font-serif text-stone-800 mb-1.5 flex items-center gap-2">
+                  <FileArchive className="w-5 h-5 text-stone-600 shrink-0" /> Upload Dataset ZIP
                 </h3>
-                <p className="text-xs text-stone-500 mb-4">
-                  Archive structure: Put Black & White (degraded) images inside a <code>bw/</code> or <code>input/</code> folder, and matching Color (clean) targets inside a <code>color/</code> or <code>target/</code> folder with the same filenames.
+                <p className="text-xs text-stone-600 mb-4 leading-relaxed">
+                  Archive structure: Put Black &amp; White (degraded) images inside a <code>bw/</code> or <code>input/</code> folder, and matching Color (clean) targets inside a <code>color/</code> or <code>target/</code> folder with the same filenames.
                 </p>
               </div>
               
               {isProcessing ? (
-                <div className="p-8 border border-dashed border-indigo-300 bg-indigo-50/30 rounded-2xl flex flex-col items-center justify-center text-center">
-                  <RefreshCw className="w-8 h-8 text-indigo-600 animate-spin mb-3" />
-                  <span className="font-semibold text-stone-800 mb-2">{progressMsg}</span>
+                <div className="p-6 sm:p-8 border border-dashed border-indigo-300 bg-indigo-50/30 rounded-2xl flex flex-col items-center justify-center text-center">
+                  <RefreshCw className="w-7 h-7 sm:w-8 sm:h-8 text-indigo-600 animate-spin mb-3 shrink-0" />
+                  <span className="font-semibold text-stone-800 text-xs sm:text-sm mb-2">{progressMsg}</span>
                   
                   {/* Progress Bar */}
                   <div className="w-full max-w-md bg-stone-200 rounded-full h-3 mb-2 overflow-hidden shadow-inner">
@@ -1007,18 +1030,18 @@ export default function WeightsAdmin() {
                 <div 
                   onDragOver={onDragOver} 
                   onDrop={handleZipDrop}
-                  className={`drop-zone p-8 flex flex-col items-center justify-center text-center cursor-pointer ${zipStatus}`}
+                  className={`drop-zone p-6 sm:p-8 flex flex-col items-center justify-center text-center cursor-pointer ${zipStatus}`}
                 >
                   <input type="file" id="zip-upload" className="hidden" accept=".zip" onChange={handleZipDrop} />
-                  <label htmlFor="zip-upload" className="cursor-pointer flex flex-col items-center w-full h-full">
+                  <label htmlFor="zip-upload" className="cursor-pointer flex flex-col items-center w-full min-h-[44px]">
                     {zipStatus === 'uploading' ? (
-                      <div className="w-10 h-10 border-4 border-stone-200 border-t-indigo-500 rounded-full animate-spin mb-4"></div>
+                      <div className="w-8 h-8 sm:w-10 sm:h-10 border-4 border-stone-200 border-t-indigo-500 rounded-full animate-spin mb-3"></div>
                     ) : zipStatus === 'success' ? (
-                      <CheckCircle className="w-10 h-10 text-emerald-500 mb-4 scale-110 transition-transform" />
+                      <CheckCircle className="w-8 h-8 sm:w-10 sm:h-10 text-emerald-500 mb-3" />
                     ) : (
-                      <UploadCloud className={`w-10 h-10 mb-4 ${zipStatus === 'error' ? 'text-red-400' : 'text-stone-400'}`} />
+                      <UploadCloud className={`w-8 h-8 sm:w-10 sm:h-10 mb-3 ${zipStatus === 'error' ? 'text-red-400' : 'text-stone-400'}`} />
                     )}
-                    <span className="font-semibold text-stone-800 text-base mb-1">
+                    <span className="font-semibold text-stone-800 text-sm sm:text-base mb-1">
                       {zipStatus === 'uploading' ? 'Extracting ZIP & Pairing Images...' : 'Drop Dataset ZIP File'}
                     </span>
                     <span className="text-xs text-stone-500">or click to browse local files (.zip)</span>
@@ -1028,23 +1051,23 @@ export default function WeightsAdmin() {
             </div>
 
             {/* Direct Upload Form */}
-            <div className={`cream-card p-6 flex flex-col transition-all duration-300 ${showAddForm ? 'opacity-100 scale-100' : 'opacity-60 pointer-events-none'}`}>
-              <h3 className="text-lg font-serif text-stone-800 mb-4 flex items-center gap-2">
-                <Plus className="w-5 h-5 text-stone-600" /> Direct Pair Upload
+            <div className={`cream-card p-4 sm:p-6 flex flex-col transition-all duration-300 ${showAddForm ? 'opacity-100' : 'opacity-60 pointer-events-none'}`}>
+              <h3 className="text-base sm:text-lg font-serif text-stone-800 mb-3 sm:mb-4 flex items-center gap-2">
+                <Plus className="w-5 h-5 text-stone-600 shrink-0" /> Direct Pair Upload
               </h3>
               
               <form onSubmit={handleAddPair} className="space-y-4 flex-grow flex flex-col justify-between">
                 <div className="space-y-3">
                   <div>
                     <label className="block text-xs font-semibold text-stone-700 uppercase tracking-wider mb-1">
-                      Black & White (Source)
+                      Black &amp; White (Source)
                     </label>
                     <input 
                       type="file" 
                       accept="image/*"
                       disabled={!showAddForm}
                       onChange={(e) => setNewBwFile(e.target.files?.[0] || null)}
-                      className="w-full text-xs text-stone-600 file:mr-2 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-stone-100 file:text-stone-700 hover:file:bg-stone-200"
+                      className="w-full text-xs text-stone-600 file:mr-2 file:py-2 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-stone-100 file:text-stone-700 hover:file:bg-stone-200 cursor-pointer min-h-[36px]"
                     />
                   </div>
                   <div>
@@ -1056,7 +1079,7 @@ export default function WeightsAdmin() {
                       accept="image/*"
                       disabled={!showAddForm}
                       onChange={(e) => setNewColorFile(e.target.files?.[0] || null)}
-                      className="w-full text-xs text-stone-600 file:mr-2 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-stone-100 file:text-stone-700 hover:file:bg-stone-200"
+                      className="w-full text-xs text-stone-600 file:mr-2 file:py-2 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-stone-100 file:text-stone-700 hover:file:bg-stone-200 cursor-pointer min-h-[36px]"
                     />
                   </div>
                 </div>
@@ -1064,14 +1087,15 @@ export default function WeightsAdmin() {
                 <button 
                   type="submit"
                   disabled={!showAddForm || addStatus === 'submitting' || !newBwFile || !newColorFile}
-                  className="w-full mt-4 bg-stone-800 hover:bg-stone-700 disabled:bg-stone-200 disabled:text-stone-400 text-stone-100 font-semibold py-2 rounded-lg text-sm transition-colors flex items-center justify-center gap-2"
+                  className="w-full mt-4 bg-stone-800 hover:bg-stone-700 active:bg-black disabled:bg-stone-200 disabled:text-stone-400 text-stone-100 font-semibold py-2.5 rounded-lg text-xs sm:text-sm transition-colors flex items-center justify-center gap-2 min-h-[44px] cursor-pointer"
                 >
                   {addStatus === 'submitting' ? (
                     <>
-                      <RefreshCw className="w-4 h-4 animate-spin" /> Uploading Pair...
+                      <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
+                      <span>Uploading Pair...</span>
                     </>
                   ) : (
-                    'Upload Pair'
+                    <span>Upload Pair</span>
                   )}
                 </button>
               </form>
@@ -1080,35 +1104,35 @@ export default function WeightsAdmin() {
           </div>
 
           {/* Paginated Pair Display */}
-          <div className="cream-card p-6">
+          <div className="cream-card p-4 sm:p-6">
             
             {/* Search and Control Bar */}
-            <div className="flex flex-col xl:flex-row xl:items-center justify-between pb-6 mb-6 border-b border-stone-200 gap-4">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between pb-4 sm:pb-6 mb-4 sm:mb-6 border-b border-stone-200 gap-3 sm:gap-4">
               <div>
-                <h3 className="text-xl font-serif text-stone-800">
+                <h3 className="text-lg sm:text-xl font-serif text-stone-800">
                   Dataset Pairs Directory ({totalPairs} total pairs)
                 </h3>
                 <p className="text-xs text-stone-500 mt-0.5">
-                  Showing in chunks of 6. Hover over any image to update it in-place.
+                  Showing in chunks of 6. Tap or hover to change images in-place.
                 </p>
               </div>
               
-              <div className="flex flex-wrap items-center gap-3">
+              <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                 {/* Search Input */}
-                <div className="relative min-w-[240px] flex-grow sm:flex-grow-0">
-                  <Search className="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <div className="relative w-full sm:w-auto min-w-[200px] flex-grow">
+                  <Search className="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input 
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     placeholder="Search by filename..."
-                    className="w-full pl-9 pr-4 py-2 border border-stone-300 rounded-lg text-sm bg-stone-50/50 focus:bg-white focus:ring-1 focus:ring-stone-400 focus:outline-none transition-colors"
+                    className="w-full pl-9 pr-4 py-2 border border-stone-300 rounded-lg text-xs sm:text-sm bg-stone-50/50 focus:bg-white focus:ring-1 focus:ring-stone-400 focus:outline-none transition-colors min-h-[40px]"
                   />
                 </div>
 
                 {/* Select All on Page */}
                 {pairs.length > 0 && (
-                  <label className="flex items-center gap-2 border border-stone-300 rounded-lg px-3 py-2 text-xs font-semibold text-stone-600 bg-stone-50 hover:bg-stone-100 transition-colors cursor-pointer select-none">
+                  <label className="flex items-center gap-2 border border-stone-300 rounded-lg px-3 py-2 text-xs font-semibold text-stone-700 bg-stone-50 hover:bg-stone-100 active:bg-stone-200 transition-colors cursor-pointer select-none min-h-[40px]">
                     <input 
                       type="checkbox"
                       checked={pairs.every(p => selectedIds.includes(p.id))}
@@ -1124,29 +1148,33 @@ export default function WeightsAdmin() {
                           setSelectedIds(prev => prev.filter(id => !pageIds.includes(id)));
                         }
                       }}
-                      className="w-3.5 h-3.5 rounded text-indigo-600 border-stone-300 focus:ring-indigo-500 cursor-pointer"
+                      className="w-4 h-4 rounded text-indigo-600 border-stone-300 focus:ring-indigo-500 cursor-pointer"
                     />
-                    Select Page
+                    <span>Select Page</span>
                   </label>
                 )}
 
                 {/* Batch Actions */}
                 {selectedIds.length > 0 && (
                   <button
+                    type="button"
                     onClick={handleBatchDelete}
-                    className="flex items-center gap-1.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 px-3 py-2 rounded-lg font-semibold text-xs transition-colors"
+                    className="flex items-center gap-1.5 bg-red-50 hover:bg-red-100 active:bg-red-200 text-red-700 border border-red-200 px-3 py-2 rounded-lg font-semibold text-xs transition-colors min-h-[40px] cursor-pointer"
                   >
-                    <Trash2 className="w-3.5 h-3.5" /> Delete Selected ({selectedIds.length})
+                    <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                    <span>Delete ({selectedIds.length})</span>
                   </button>
                 )}
 
-                {/* Delete All Wiping Database */}
+                {/* Delete All / Wipe Database */}
                 {totalPairs > 0 && (
                   <button
+                    type="button"
                     onClick={handleDeleteAll}
-                    className="flex items-center gap-1.5 bg-stone-100 hover:bg-red-50 text-stone-600 hover:text-red-700 border border-stone-200 hover:border-red-200 px-3 py-2 rounded-lg font-semibold text-xs transition-colors ml-auto sm:ml-0"
+                    className="flex items-center gap-1.5 bg-stone-100 hover:bg-red-50 active:bg-red-100 text-stone-600 hover:text-red-700 border border-stone-200 hover:border-red-200 px-3 py-2 rounded-lg font-semibold text-xs transition-colors min-h-[40px] cursor-pointer"
                   >
-                    <Trash2 className="w-3.5 h-3.5" /> Wipe Entire Dataset
+                    <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                    <span>Wipe All</span>
                   </button>
                 )}
               </div>
@@ -1154,29 +1182,33 @@ export default function WeightsAdmin() {
 
             {/* Chunk/Page Selector Top */}
             {totalPages > 1 && (
-              <div className="flex justify-end items-center gap-2 mb-6">
+              <div className="flex justify-end items-center gap-2 mb-4 sm:mb-6">
                 <button 
+                  type="button"
                   disabled={currentPage === 1}
                   onClick={() => {
                     const prev = Math.max(1, currentPage - 1);
                     setCurrentPage(prev);
                     fetchPairs(prev, searchQuery);
                   }}
-                  className="p-1.5 rounded-lg border border-stone-300 hover:bg-stone-100 disabled:opacity-40 disabled:hover:bg-transparent transition-colors"
+                  className="p-2 rounded-lg border border-stone-300 hover:bg-stone-100 disabled:opacity-30 disabled:hover:bg-transparent transition-colors min-h-[40px] min-w-[40px] flex items-center justify-center cursor-pointer"
+                  aria-label="Previous chunk"
                 >
                   <ChevronLeft className="w-4 h-4" />
                 </button>
-                <span className="text-sm font-mono text-stone-600">
+                <span className="text-xs sm:text-sm font-mono text-stone-600 px-1">
                   Chunk {currentPage} of {totalPages}
                 </span>
                 <button 
+                  type="button"
                   disabled={currentPage === totalPages}
                   onClick={() => {
                     const next = Math.min(totalPages, currentPage + 1);
                     setCurrentPage(next);
                     fetchPairs(next, searchQuery);
                   }}
-                  className="p-1.5 rounded-lg border border-stone-300 hover:bg-stone-100 disabled:opacity-40 disabled:hover:bg-transparent transition-colors"
+                  className="p-2 rounded-lg border border-stone-300 hover:bg-stone-100 disabled:opacity-30 disabled:hover:bg-transparent transition-colors min-h-[40px] min-w-[40px] flex items-center justify-center cursor-pointer"
+                  aria-label="Next chunk"
                 >
                   <ChevronRight className="w-4 h-4" />
                 </button>
@@ -1184,25 +1216,26 @@ export default function WeightsAdmin() {
             )}
 
             {pairs.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-16 text-center text-stone-400">
-                <ImageIcon className="w-12 h-12 mb-3 stroke-[1.5]" />
-                <p className="text-lg font-serif mb-1">No training data found</p>
-                <p className="text-sm">
+              <div className="flex flex-col items-center justify-center py-12 sm:py-16 text-center text-stone-400 px-4">
+                <ImageIcon className="w-10 h-10 sm:w-12 sm:h-12 mb-3 stroke-[1.5]" />
+                <p className="text-base sm:text-lg font-serif mb-1">No training data found</p>
+                <p className="text-xs sm:text-sm max-w-sm">
                   {searchQuery ? "No matches found for your search query." : "Upload a dataset ZIP or add a single image pair to get started."}
                 </p>
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
                 {pairs.map((pair) => {
                   const isChecked = selectedIds.includes(pair.id);
                   return (
                     <div 
                       key={pair.id} 
-                      className={`pair-card p-4 rounded-xl border flex flex-col justify-between relative transition-all ${isChecked ? 'bg-indigo-50/20 border-indigo-300 ring-1 ring-indigo-300' : 'bg-stone-50 border-stone-200'}`}
+                      className={`pair-card p-3 sm:p-4 rounded-xl border flex flex-col justify-between relative transition-all ${
+                        isChecked ? 'bg-indigo-50/30 border-indigo-300 ring-1 ring-indigo-300' : 'bg-stone-50/80 border-stone-200'
+                      }`}
                     >
-                      
                       {/* Checkbox Overlay */}
-                      <div className="absolute top-2 left-2 z-10 bg-white/90 backdrop-blur rounded p-1 border border-stone-200 shadow-sm flex items-center justify-center">
+                      <div className="absolute top-2 left-2 z-10 bg-white/90 backdrop-blur-xs rounded-lg p-1.5 border border-stone-200 shadow-xs flex items-center justify-center min-w-[36px] min-h-[36px]">
                         <input 
                           type="checkbox"
                           checked={isChecked}
@@ -1214,11 +1247,12 @@ export default function WeightsAdmin() {
                             }
                           }}
                           className="w-4 h-4 rounded text-indigo-600 border-stone-300 focus:ring-indigo-500 cursor-pointer"
+                          aria-label={`Select pair ${pair.original_name}`}
                         />
                       </div>
                       
                       {/* Images Container */}
-                      <div className="grid grid-cols-2 gap-3 mb-4 mt-4">
+                      <div className="grid grid-cols-2 gap-2 sm:gap-3 mb-3 mt-8">
                         
                         {/* B&W Side */}
                         <div className="relative group overflow-hidden rounded-lg border border-stone-300 aspect-square bg-stone-200">
@@ -1227,7 +1261,7 @@ export default function WeightsAdmin() {
                             alt="Black & White" 
                             className="w-full h-full object-cover" 
                           />
-                          <div className="absolute inset-0 bg-stone-900/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center text-stone-100 p-2 text-center">
+                          <div className="absolute inset-0 bg-stone-900/60 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity flex flex-col items-center justify-center text-stone-100 p-2 text-center pointer-events-auto">
                             <input 
                               type="file" 
                               accept="image/*"
@@ -1237,13 +1271,14 @@ export default function WeightsAdmin() {
                             />
                             <label 
                               htmlFor={`update-bw-${pair.id}`} 
-                              className="cursor-pointer text-xs font-semibold px-2 py-1 rounded bg-stone-800 hover:bg-stone-700 transition-colors flex items-center gap-1 shadow-sm"
+                              className="cursor-pointer text-[10px] sm:text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 active:bg-black transition-colors flex items-center gap-1 shadow-sm min-h-[36px]"
                             >
-                              <RefreshCw className="w-3 h-3" /> Change B&W
+                              <RefreshCw className="w-3 h-3 shrink-0" />
+                              <span>Change B&amp;W</span>
                             </label>
                           </div>
-                          <span className="absolute bottom-1 left-1 bg-stone-900/75 text-stone-100 font-mono text-[9px] px-1.5 py-0.5 rounded uppercase tracking-wider">
-                            B&W / Degraded
+                          <span className="absolute bottom-1 left-1 bg-stone-900/80 text-stone-100 font-mono text-[9px] px-1.5 py-0.5 rounded uppercase tracking-wider pointer-events-none">
+                            B&amp;W
                           </span>
                         </div>
 
@@ -1254,7 +1289,7 @@ export default function WeightsAdmin() {
                             alt="Color Target" 
                             className="w-full h-full object-cover" 
                           />
-                          <div className="absolute inset-0 bg-stone-900/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center text-stone-100 p-2 text-center">
+                          <div className="absolute inset-0 bg-stone-900/60 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity flex flex-col items-center justify-center text-stone-100 p-2 text-center pointer-events-auto">
                             <input 
                               type="file" 
                               accept="image/*"
@@ -1264,21 +1299,38 @@ export default function WeightsAdmin() {
                             />
                             <label 
                               htmlFor={`update-color-${pair.id}`} 
-                              className="cursor-pointer text-xs font-semibold px-2 py-1 rounded bg-stone-800 hover:bg-stone-700 transition-colors flex items-center gap-1 shadow-sm"
+                              className="cursor-pointer text-[10px] sm:text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 active:bg-black transition-colors flex items-center gap-1 shadow-sm min-h-[36px]"
                             >
-                              <RefreshCw className="w-3 h-3" /> Change Color
+                              <RefreshCw className="w-3 h-3 shrink-0" />
+                              <span>Change Color</span>
                             </label>
                           </div>
-                          <span className="absolute bottom-1 left-1 bg-stone-900/75 text-stone-100 font-mono text-[9px] px-1.5 py-0.5 rounded uppercase tracking-wider">
-                            Color / Target
+                          <span className="absolute bottom-1 left-1 bg-stone-900/80 text-stone-100 font-mono text-[9px] px-1.5 py-0.5 rounded uppercase tracking-wider pointer-events-none">
+                            Color
                           </span>
                         </div>
 
                       </div>
 
+                      {/* Mobile Visible Change Buttons Bar (guarantees touch devices without hover can change images) */}
+                      <div className="flex items-center justify-between gap-1 mb-2 sm:hidden border-t border-stone-200/50 pt-1.5">
+                        <label 
+                          htmlFor={`update-bw-${pair.id}`} 
+                          className="flex-1 text-[10px] text-center font-medium text-stone-600 bg-stone-100 hover:bg-stone-200 active:bg-stone-300 py-1.5 px-1 rounded cursor-pointer min-h-[32px] flex items-center justify-center"
+                        >
+                          Change B&amp;W
+                        </label>
+                        <label 
+                          htmlFor={`update-color-${pair.id}`} 
+                          className="flex-1 text-[10px] text-center font-medium text-stone-600 bg-stone-100 hover:bg-stone-200 active:bg-stone-300 py-1.5 px-1 rounded cursor-pointer min-h-[32px] flex items-center justify-center"
+                        >
+                          Change Color
+                        </label>
+                      </div>
+
                       {/* Metadata & Controls */}
-                      <div className="flex items-center justify-between gap-2 border-t border-stone-200 pt-3">
-                        <div className="min-w-0">
+                      <div className="flex items-center justify-between gap-2 border-t border-stone-200 pt-2.5">
+                        <div className="min-w-0 flex-1">
                           <p className="text-xs font-semibold text-stone-800 truncate" title={pair.original_name}>
                             {pair.original_name}
                           </p>
@@ -1288,9 +1340,11 @@ export default function WeightsAdmin() {
                         </div>
 
                         <button 
+                          type="button"
                           onClick={() => handleDeletePair(pair.id)}
-                          className="text-stone-400 hover:text-red-600 p-1.5 hover:bg-red-50 rounded-lg transition-colors flex-shrink-0"
+                          className="text-stone-400 hover:text-red-600 active:text-red-800 p-2 hover:bg-red-50 rounded-lg transition-colors shrink-0 min-h-[44px] min-w-[44px] flex items-center justify-center cursor-pointer"
                           title="Delete Pair"
+                          aria-label={`Delete pair ${pair.original_name}`}
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
@@ -1304,31 +1358,35 @@ export default function WeightsAdmin() {
             
             {/* Pagination Controls at Bottom */}
             {totalPages > 1 && (
-              <div className="flex justify-center items-center gap-4 mt-8 pt-4 border-t border-stone-200">
+              <div className="flex justify-center items-center gap-3 sm:gap-4 mt-6 sm:mt-8 pt-4 border-t border-stone-200">
                 <button 
+                  type="button"
                   disabled={currentPage === 1}
                   onClick={() => {
                     const prev = Math.max(1, currentPage - 1);
                     setCurrentPage(prev);
                     fetchPairs(prev, searchQuery);
                   }}
-                  className="flex items-center gap-1 text-sm font-medium text-stone-600 hover:text-stone-900 disabled:opacity-40 disabled:hover:text-stone-600 transition-colors"
+                  className="flex items-center gap-1 text-xs sm:text-sm font-medium text-stone-600 hover:text-stone-900 disabled:opacity-40 disabled:hover:text-stone-600 transition-colors min-h-[44px] px-3 py-2 cursor-pointer"
                 >
-                  <ChevronLeft className="w-4 h-4" /> Prev Chunk
+                  <ChevronLeft className="w-4 h-4 shrink-0" />
+                  <span>Prev Chunk</span>
                 </button>
-                <span className="text-sm font-mono text-stone-500">
+                <span className="text-xs sm:text-sm font-mono text-stone-600 px-1">
                   {currentPage} / {totalPages}
                 </span>
                 <button 
+                  type="button"
                   disabled={currentPage === totalPages}
                   onClick={() => {
                     const next = Math.min(totalPages, currentPage + 1);
                     setCurrentPage(next);
                     fetchPairs(next, searchQuery);
                   }}
-                  className="flex items-center gap-1 text-sm font-medium text-stone-600 hover:text-stone-900 disabled:opacity-40 disabled:hover:text-stone-600 transition-colors"
+                  className="flex items-center gap-1 text-xs sm:text-sm font-medium text-stone-600 hover:text-stone-900 disabled:opacity-40 disabled:hover:text-stone-600 transition-colors min-h-[44px] px-3 py-2 cursor-pointer"
                 >
-                  Next Chunk <ChevronRight className="w-4 h-4" />
+                  <span>Next Chunk</span>
+                  <ChevronRight className="w-4 h-4 shrink-0" />
                 </button>
               </div>
             )}
