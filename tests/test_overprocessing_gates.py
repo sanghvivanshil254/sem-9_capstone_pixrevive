@@ -136,3 +136,43 @@ def test_case11_minor_creases_robust_sigma_and_coverage():
     mask = pipe._stage_2_fracture_masking(ctx, None)
     cov_pct = 100.0 * float(np.count_nonzero(mask)) / float(mask.size)
     assert 0.5 <= cov_pct <= 25.0, f"case11 mask coverage {cov_pct:.3f}% outside target band [0.5%, 25.0%]"
+
+
+def test_sepia_hue_uniformity_chelsea_and_real_hair_are_color():
+    """Multi-hue color photos with warm palettes must not be misclassified as sepia."""
+    qa = QualityAnalyzer()
+    
+    # 1. Chelsea (cat photo with warm fur, green eyes, distinct hues)
+    chelsea = skimage.data.chelsea()
+    meta_ch = qa.analyze(chelsea)
+    assert meta_ch.get("color_type") == "color", f"Chelsea falsely classified as: {meta_ch.get('color_type')}"
+    assert meta_ch.get("chrom_hue_std", 0.0) > 8.0, f"Chelsea hue std too low: {meta_ch.get('chrom_hue_std')}"
+
+    # 2. Real hair portrait (brunette portrait with skin and lips)
+    hair_p = os.path.join(PRISTINE_DIR, "real_hair_portrait.png")
+    if os.path.exists(hair_p):
+        meta_hp = qa.analyze(_load_img(hair_p))
+        assert meta_hp.get("color_type") == "color", f"Real hair falsely classified as: {meta_hp.get('color_type')}"
+        assert meta_hp.get("chrom_hue_std", 0.0) > 8.0, f"Real hair hue std too low: {meta_hp.get('chrom_hue_std')}"
+
+    # 3. Genuine sepia fixtures must remain sepia
+    for s_file in ["case3_sepia_flaked_portrait.jpg", "case9_teared_sepia.jpg"]:
+        p = os.path.join(DAMAGED_DIR, s_file)
+        if os.path.exists(p):
+            meta_s = qa.analyze(_load_img(p))
+            assert meta_s.get("color_type") == "sepia", f"{s_file} should be sepia, got: {meta_s.get('color_type')}"
+            assert meta_s.get("chrom_hue_std", 0.0) <= 8.0, f"{s_file} hue std too high: {meta_s.get('chrom_hue_std')}"
+
+
+def test_option_3_unblocks_case9_colorization():
+    """Option 3 must keep case9_teared_sepia colorized instead of rolling back to grayscale."""
+    from ai.pipeline.restoration_pipeline import RestorationPipeline
+    path = os.path.join(DAMAGED_DIR, "case9_teared_sepia.jpg")
+    img = _load_img(path)
+    qa = QualityAnalyzer()
+    meta = qa.analyze(img)
+    pipe = RestorationPipeline(device="cuda")
+    ctx = PipelineContext(img.copy(), meta)
+    pipe._stage_6_colorization(ctx, None)
+    assert ctx.image_metadata.get("colorization_applied", False), "Colorization was not applied to case9"
+    assert not ctx.image_metadata.get("colorization_rolled_back", False), "Colorization was rolled back on case9"

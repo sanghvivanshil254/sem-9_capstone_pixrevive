@@ -103,6 +103,23 @@ class QualityAnalyzer:
         warm_pixels = int(np.sum((H >= 8) & (H <= 50)))
         warm_ratio  = warm_pixels / max(H.size, 1)
 
+        # Fix 2: Hue standard deviation on chromatic pixels (S >= 25).
+        # A true chemically-toned sepia print has a uniform toner bath across the whole
+        # paper (chrom_hue_std <= 8.0, measured 2.6-2.7 on case3 and case9).
+        # Multi-hue color photos (e.g. chelsea cat fur with eyes/whiskers, or brunette
+        # hair with skin and lips) have distinct chromatic hues (measured std 18.2-32.6),
+        # and must never be misclassified as sepia.
+        chromatic_hues = H[S >= 25.0]
+        if chromatic_hues.size >= 100:
+            chrom_hue_std = float(np.std(chromatic_hues))
+        else:
+            chrom_hue_std = 0.0
+
+        color_type_fix_enabled = os.environ.get("PIXREVIVE_COLOR_TYPE_FIX", "1").strip().lower() not in (
+            "0", "false", "no", "off"
+        )
+        hue_uniformity_ok = (chrom_hue_std <= 8.0) if color_type_fix_enabled else True
+
         # KEY FIX: Three-tier sepia detection:
         #
         # Tier 1 — Classic sepia (low sat, very warm):
@@ -124,8 +141,10 @@ class QualityAnalyzer:
         )
         is_sepia_aged = (
             not is_grayscale
+            and mean_saturation >= 70.0
             and mean_saturation < 160.0
             and warm_ratio > 0.70
+            and (hue_uniformity_ok if color_type_fix_enabled else True)
         )
         # Warm monochrome: channel diff much lower than mean value → uniform warm cast
         mean_value = float(np.mean(V))
@@ -361,6 +380,7 @@ class QualityAnalyzer:
             "color_type":        color_type,
             "mean_saturation":   mean_saturation,
             "warm_ratio":        warm_ratio,
+            "chrom_hue_std":     round(chrom_hue_std, 2),
             "damage_percentage": damage_percentage,
             "dark_spot_percentage": dark_spot_percentage,
             "niqe_score":       niqe_score_val,

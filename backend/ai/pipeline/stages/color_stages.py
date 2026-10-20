@@ -34,6 +34,11 @@ def _gray_skip_warranted(context: PipelineContext) -> bool:
         "0", "false", "no", "off"
     ):
         return False
+    # Fix 2 / Option 3: bypass gray_skip when PIXREVIVE_COLOR_TYPE_FIX is enabled
+    if os.environ.get("PIXREVIVE_COLOR_TYPE_FIX", "1").strip().lower() not in (
+        "0", "false", "no", "off"
+    ):
+        return False
     meta = context.image_metadata
     if meta.get("color_type") not in ("grayscale", "monochrome"):
         return False
@@ -204,17 +209,27 @@ class ColorStagesMixin:
                 # wholesale; the luminance-preserving pre-colorization canvas
                 # is strictly more honest. Runs before any chroma diffusion so
                 # downstream stages never refine a hallucinated wash.
-                if self._detect_colorization_hallucination(context.working_image) or (
-                    color_type == "sepia"
+                _color_type_fix = os.environ.get("PIXREVIVE_COLOR_TYPE_FIX", "1").strip().lower() not in (
+                    "0", "false", "no", "off"
+                )
+                # Fix 2 / Option 3: bypass sepia background chroma wash rollback when colorization is requested
+                _allow_sepia_wash_rollback = not _color_type_fix
+
+                single_hue_wash = self._detect_colorization_hallucination(context.working_image)
+                bg_wash = (
+                    _allow_sepia_wash_rollback
+                    and color_type == "sepia"
                     and self._detect_background_chroma_wash(
                         context.working_image,
                         context.image_metadata.get("faces") or [],
                         pre_rgb=pre_colorization_canvas,
                     )
-                ):
+                )
+
+                if single_hue_wash or bg_wash:
                     wash_kind = (
                         "single-hue"
-                        if self._detect_colorization_hallucination(context.working_image)
+                        if single_hue_wash
                         else "background chroma field"
                     )
                     self._rollback_to_l_preserved_grayscale(
