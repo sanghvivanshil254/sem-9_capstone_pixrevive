@@ -1162,6 +1162,17 @@ class FinishStagesMixin:
 
     def _stage_10b_projector_grade(self, context: PipelineContext, on_progress: Optional[Callable] = None) -> None:
         """Stage 10b: Projector Display Grading (CLAHE, shadow-lifted S-curve, and calibrated tonal grading)."""
+        # Fix 4: Projector exhibition grading flag. Default 1 preserves legacy behavior;
+        # setting PIXREVIVE_PROJECTOR_GRADE=0 skips contrast/film-curve/grain re-grading.
+        _env_enabled = os.environ.get("PIXREVIVE_PROJECTOR_GRADE", "1").strip().lower() not in (
+            "0", "false", "no", "off"
+        )
+        _flag_enabled = context.pipeline_flags.get("enable_projector_grade", True)
+        if not (_env_enabled and _flag_enabled):
+            context.add_log("Stage 10b ProjectorGrade: Skipped (disabled by PIXREVIVE_PROJECTOR_GRADE=0 or pipeline flag).")
+            context.image_metadata["projector_grade_applied"] = False
+            return
+
         DebugLogger.save_stage(context, "10_before_projector_grade")
 
         if on_progress:

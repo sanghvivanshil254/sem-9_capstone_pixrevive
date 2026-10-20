@@ -236,3 +236,47 @@ def test_denoise_floor_gate_flag_zero_restores_legacy(monkeypatch):
     import re
     h_bg = float(re.search(r"h_bg=([\d.]+)", logs[-1]).group(1))
     assert h_bg >= 6.5, f"Legacy mode should clamp h_bg >= 6.5, got {h_bg}"
+
+
+def test_projector_grade_default_applies(monkeypatch):
+    """By default (PIXREVIVE_PROJECTOR_GRADE=1), Stage 10b applies grading and logs."""
+    monkeypatch.setenv("PIXREVIVE_PROJECTOR_GRADE", "1")
+    from ai.pipeline.restoration_pipeline import RestorationPipeline
+    pipe = RestorationPipeline(device="cuda")
+    cam = cv2.cvtColor(skimage.data.camera(), cv2.COLOR_GRAY2RGB)
+    ctx = PipelineContext(cam.copy())
+
+    pipe._stage_10b_projector_grade(ctx, None)
+    assert any("Stage 10b ProjectorGrade: Tamed CLAHE" in l for l in ctx.processing_log), "Grading log missing"
+    assert ctx.image_metadata.get("projector_grade_applied", False), "projector_grade_applied should be True"
+
+
+def test_projector_grade_flag_zero_skips(monkeypatch):
+    """When PIXREVIVE_PROJECTOR_GRADE=0, Stage 10b is bypassed with bitwise identity."""
+    monkeypatch.setenv("PIXREVIVE_PROJECTOR_GRADE", "0")
+    from ai.pipeline.restoration_pipeline import RestorationPipeline
+    pipe = RestorationPipeline(device="cuda")
+    cam = cv2.cvtColor(skimage.data.camera(), cv2.COLOR_GRAY2RGB)
+    ctx = PipelineContext(cam.copy())
+    pre = ctx.working_image.copy()
+
+    pipe._stage_10b_projector_grade(ctx, None)
+    assert any("Skipped (disabled by PIXREVIVE_PROJECTOR_GRADE=0" in l for l in ctx.processing_log), "Skip log missing"
+    assert not ctx.image_metadata.get("projector_grade_applied", True), "projector_grade_applied should be False"
+    assert np.array_equal(pre, ctx.working_image), "Canvas should be unchanged when projector grade is disabled"
+
+
+def test_projector_grade_pipeline_flag_skips():
+    """When context.pipeline_flags['enable_projector_grade']=False, Stage 10b is bypassed."""
+    from ai.pipeline.restoration_pipeline import RestorationPipeline
+    pipe = RestorationPipeline(device="cuda")
+    cam = cv2.cvtColor(skimage.data.camera(), cv2.COLOR_GRAY2RGB)
+    ctx = PipelineContext(cam.copy())
+    ctx.pipeline_flags["enable_projector_grade"] = False
+    pre = ctx.working_image.copy()
+
+    pipe._stage_10b_projector_grade(ctx, None)
+    assert any("Skipped (disabled by PIXREVIVE_PROJECTOR_GRADE=0 or pipeline flag)" in l for l in ctx.processing_log)
+    assert not ctx.image_metadata.get("projector_grade_applied", True)
+    assert np.array_equal(pre, ctx.working_image)
+
