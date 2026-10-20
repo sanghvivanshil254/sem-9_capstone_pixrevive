@@ -10,6 +10,8 @@ Key architecture:
     to LaMa, which handles large-mask texture synthesis without blurry PDE smudges.
 """
 
+import os
+
 import cv2
 import numpy as np
 from ai.pipeline.pipeline_context import PipelineContext
@@ -72,8 +74,20 @@ class MaskRefiner:
             fused = mask.copy()
 
         # ── 2. Close intra-damage gaps (robust 7x7 kernel) ─────────────────
+        # BW-blur session (2026-10-18): the CLOSE/DILATE kernels used to be
+        # fixed pixels. On a 183×173 canvas a k7 CLOSE spans 3.8% of the
+        # width — measured on the tree landscape it fused the U-Net's granular
+        # 5.49% sky speckle field into one 10%-of-frame blanket (16.1% total
+        # after dilate), and LaMa wiped those scene regions into the flat
+        # oil-paint plates. Same failure class as output_verifier's fixed
+        # 31px k_ext (already scale-normalized there). Kernels now scale with
+        # the canvas and stay within the original 3..7 / 3..5 bounds, so
+        # large-canvas behaviour is unchanged.
         field_mode = _tm_field(context)
-        k7 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        _scale = max(h, w)
+        _k_close = int(min(7, max(3, round(_scale * 0.02))))
+        _k_dilate = int(min(5, max(3, _k_close - 2)))
+        k7 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_k_close, _k_close))
         if field_mode:
             k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
             refined = cv2.morphologyEx(fused, cv2.MORPH_CLOSE, k3, iterations=1)
@@ -82,8 +96,66 @@ class MaskRefiner:
 
         # ── 3. Dilation for clean inpainting overlap context ───────────────
         # Ensure mask fully covers thin feathered tear margins and micro-cracks
-        k5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        k5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_k_dilate, _k_dilate))
         refined = cv2.dilate(refined, (k3 if field_mode else k5), iterations=1)
+
+        # ── 3b. Scene-content ingress gate (BW-blur session 2026-10-18) ─────
+        # A damage component must DIFFER from its surround. Measured on the
+        # tree landscape: the 50k-px "crack" blanket filling the bright sky
+        # had interior texture variance 2696 vs surround 2679 (ratio 1.01)
+        # and no popout (|Δ mean| < 1.4) — it IS the scene, not damage.
+        # Components like that are what turned LaMa loose on clean sky.
+        # Gate (env PIXREVIVE_SCENE_GATE=0 reverts): drop components
+        #   - that are blob-like (aspect < 3 — thin cracks are exempt, they
+        #     legitimately read via shape not contrast),
+        #   - with no luminance popout (|mean_in − mean_ring| < 12),
+        #   - whose interior is at least 75% as textured as the ring around
+        #     them (real missing emulsion is smooth-at-surround-texture).
+        # Perimeter ring uses a 9px dilate annulus on the (noise-robust)
+        # median-filtered luminance so grain can't fake texture inside.
+        if os.environ.get("PIXREVIVE_SCENE_GATE", "1").strip().lower() not in (
+            "0", "false", "no", "off"
+        ):
+            _prev_cov = float(np.sum(refined > 0) / refined.size)
+            _gray_in = cv2.cvtColor(context.working_image, cv2.COLOR_RGB2GRAY)
+            _gmed = cv2.medianBlur(_gray_in, 3).astype(np.float32)
+            _ring_k = max(3, int(round(max(refined.shape) * 0.05)) | 1)
+            _se_ring = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (_ring_k, _ring_k))
+            _min_area = max(400, int(0.003 * refined.size))
+            _pruned_px = 0
+            _pruned_n = 0
+            _n_c, _lbl_c, _stats_c, _cent_c = cv2.connectedComponentsWithStats(
+                refined, connectivity=8)
+            for _ci in range(1, _n_c):
+                _a = int(_stats_c[_ci, cv2.CC_STAT_AREA])
+                if _a < _min_area:
+                    continue
+                _w_c = int(_stats_c[_ci, cv2.CC_STAT_WIDTH])
+                _h_c = int(_stats_c[_ci, cv2.CC_STAT_HEIGHT])
+                if max(_w_c, _h_c) / max(1, min(_w_c, _h_c)) >= 3.0:
+                    continue  # crack/tear signature: shape says damage
+                _comp = _lbl_c == _ci
+                _ring = cv2.dilate(_comp.astype(np.uint8), _se_ring) > 0
+                _ring &= ~_comp
+                if int(_ring.sum()) < 40:
+                    continue
+                _mean_in = float(_gmed[_comp].mean())
+                _pop = abs(_mean_in - float(_gmed[_ring].mean()))
+                _t_in = float(_gmed[_comp].var())
+                _t_out = float(_gmed[_ring].var())
+                if _pop < 12.0 and _t_in > 0.75 * max(_t_out, 1.0):
+                    refined[_comp] = 0
+                    _pruned_px += _a
+                    _pruned_n += 1
+            if _pruned_n:
+                context.add_log(
+                    f"MaskRefiner SceneGate: pruned {_pruned_n} scene-content "
+                    f"blob(s) ({_pruned_px} px) with no popout and interior "
+                    "texture ~= surround — not damage "
+                    f"(coverage {_prev_cov*100:.1f}% -> "
+                    f"{100.0*float(np.sum(refined>0))/refined.size:.1f}%)."
+                )
 
         # ── 4. Refine face regions ────────────────────────────────────────────
         # Protect critical facial features (eyes, nose tip, lips, teeth) from false-positive
@@ -256,6 +328,20 @@ class MaskRefiner:
         # If total residual mask is insignificant (< 0.05% or < 30px total), clear it
         if np.sum(refined > 0) < max(30, int(refined.size * 0.0005)):
             refined = np.zeros_like(refined)
+
+        # ── 4b. Protected linear texture & hair strand filter ───────────────
+        # Differentiates natural coherent linear textures (hair strands, fur)
+        # from real cracks/creases so LaMa does not smear fine hair.
+        if os.environ.get("PIXREVIVE_STRUCTURE_DISCRIMINATOR", "1").strip().lower() not in (
+            "0", "false", "no", "off"
+        ):
+            try:
+                from ai.analysis.line_structure import LineStructureAnalyzer
+                _lsa = LineStructureAnalyzer()
+                _gray_ref = cv2.cvtColor(context.working_image, cv2.COLOR_RGB2GRAY)
+                refined = _lsa.filter_hair_from_inpaint_mask(refined, _gray_ref)
+            except Exception:
+                pass
 
         # ── 5. Routing ────────────────────────────────────────────────────────
         # LaMa is a state-of-the-art Fourier Convolution inpainting model specifically

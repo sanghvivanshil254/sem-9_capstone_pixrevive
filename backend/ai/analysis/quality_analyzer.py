@@ -17,6 +17,7 @@ ROOT CAUSE FIXED:
   Added explicit `is_aged_photo` heuristic as a third classification path.
 """
 
+import os
 import cv2
 import numpy as np
 
@@ -177,6 +178,23 @@ class QualityAnalyzer:
             if is_scratch_like or is_flake_like:
                 structural_mask[labels == label] = 255
 
+        # Shared structure discriminator: prune parallel natural texture (hair strands, fur, fabric)
+        _use_disc = os.environ.get("PIXREVIVE_STRUCTURE_DISCRIMINATOR", "1").strip().lower() not in ("0", "false", "no", "off")
+        has_creases = False
+        if _use_disc:
+            try:
+                from ai.analysis.line_structure import LineStructureAnalyzer
+                analyzer = LineStructureAnalyzer()
+                comps = analyzer.analyze_components(structural_mask, gray_u8=gray)
+                # Severe physical paper tears: large prominent fracture cutting across flow (e.g. case6)
+                has_creases = any(
+                    c["is_crease_like"] and c["aspect_ratio"] >= 8.0 and c["area"] >= 800
+                    for c in comps
+                )
+                structural_mask = analyzer.filter_hair_from_damage_mask(structural_mask, gray)
+            except Exception:
+                pass
+
         damage_percentage = float(np.sum(structural_mask > 0) / (h * w) * 100.0)
 
         # ── Fast scratch line detection ───────────────────────────────────────
@@ -275,21 +293,38 @@ class QualityAnalyzer:
 
             from ai.damage.enhanced_detector import EnhancedDamageDetector
 
-            _spots = EnhancedDamageDetector(use_defect_segmenter=False).detect_dark_spots(
+            _det = EnhancedDamageDetector(use_defect_segmenter=False)
+            _spots = _det.detect_dark_spots(
                 image_np, SimpleNamespace(image_metadata={})
             )
+            if _use_disc and np.sum(_spots > 0) > 0:
+                try:
+                    from ai.analysis.line_structure import LineStructureAnalyzer
+                    analyzer = LineStructureAnalyzer()
+                    tf = analyzer.compute_tensor_field(gray)
+                    coh = tf["coherence"]
+                    # Genuine foxing/mold spots occur on smooth substrate, not in dense hair/fur flow
+                    _spots = (_spots > 0) & (coh <= 0.35)
+                except Exception:
+                    pass
             dark_spot_percentage = min(
                 float(np.sum(_spots > 0)) / (h * w) * 100.0, 15.0
             )
         except Exception:
-            dark_spot_percentage = 0.0
-        damage_percentage = max(damage_percentage, dark_spot_percentage
-        )
+            pass
+        damage_percentage = max(damage_percentage, dark_spot_percentage)
 
-        # has_white_flakes: original gate (lowered from 5.0% to 2.0%)
-        has_white_flakes = (
-            sepia_flake_percentage >= 1.0 or damage_percentage > 2.0
-        )
+        # has_white_flakes: must be genuine white flakes (sepia emulsion loss
+        # or genuine flake components on monochrome prints), not simply damage_percentage > 2.0.
+        if _use_disc:
+            has_white_flakes = (
+                (sepia_flake_percentage >= 1.0)
+                or (color_type in ("grayscale", "sepia") and damage_percentage > 2.0 and noise_score <= 6.0)
+            )
+        else:
+            has_white_flakes = (
+                sepia_flake_percentage >= 1.0 or damage_percentage > 2.0
+            )
 
         # has_scratches: NEW independent scratch trigger
         # Even if damage_pct is low, visible scratches should trigger repair
@@ -333,5 +368,6 @@ class QualityAnalyzer:
             "sepia_flake_percentage": sepia_flake_percentage,
             "has_white_flakes":  has_white_flakes,
             "has_scratches":     has_scratches,
-            "damage_confidence":  "structural" if has_white_flakes or has_scratches else "low",
+            "has_creases":       has_creases,
+            "damage_confidence":  "structural" if has_white_flakes or has_scratches or has_creases else "low",
         }

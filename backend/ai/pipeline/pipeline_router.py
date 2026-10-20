@@ -12,6 +12,7 @@ Route selection is based on:
   - resolution and enable_restoration       →  run_sr
 """
 
+import os
 import logging
 from typing import Dict, Any
 
@@ -119,6 +120,20 @@ class PipelineRouter:
         heavy_damage   = damage_pct >= 20.0
         dark_spots     = float(meta.get("dark_spot_percentage", 0.0))
 
+        _use_disc = os.environ.get("PIXREVIVE_STRUCTURE_DISCRIMINATOR", "1").strip().lower() not in ("0", "false", "no", "off")
+        has_scratches  = bool(meta.get("has_scratches", False))
+        has_creases    = bool(meta.get("has_creases", False))
+
+        if _use_disc:
+            has_damage = has_flakes or damage_pct >= 5.0 or has_scratches
+            # Distinguish genuine foxing spots / crease shadows on smooth paper (noise_score < 6.0, dark_spots >= 0.12)
+            # Exclude saturated color photos misclassified as sepia from B&W foxing escalation
+            is_monochrome_toned = (color_type == "grayscale") or (color_type == "sepia" and float(meta.get("mean_saturation", 0.0)) <= 70.0)
+            foxing_damage = (dark_spots >= 0.12 and noise_score < 6.0 and is_monochrome_toned)
+            needs_bw_repair = heavy_damage or has_damage or foxing_damage or has_creases
+        else:
+            needs_bw_repair = heavy_damage or has_damage or dark_spots >= 0.05
+
         # Route selection logic
         if color_type in ("grayscale", "sepia"):
             # Damaged B&W/sepia photos MUST repair scratches before colorization.
@@ -126,7 +141,7 @@ class PipelineRouter:
             # DDColor to colorize bright scratch pixels with wrong hues. Dark-spot
             # evidence (foxing/mold stipple) escalates too: a spotted print can
             # sit under the %-thresholds while the repair is still wanted.
-            if heavy_damage or has_damage or dark_spots >= 0.05:
+            if needs_bw_repair:
                 route = _ROUTES["DAMAGED_FACE"].copy()
                 route["description"] = "Damaged B&W — repair scratches first, then restore"
             else:

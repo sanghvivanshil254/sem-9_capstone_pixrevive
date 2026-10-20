@@ -20,6 +20,7 @@ content" (mask of ones), so behaviour on normal photos is unchanged.
 
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 import cv2
@@ -187,6 +188,20 @@ def robust_sigma(gray_u8: np.ndarray, mask: Optional[np.ndarray] = None) -> floa
         core = cv2.erode((m > 0).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
         cover = float((cnt[core] >= 2).mean()) if bool(core.any()) else 0.0
         if cover >= 0.05:
+            # Shared structure discriminator: mottle/halftone is isotropic dots.
+            # Creases and tears are elongated lines / fracture webs (high span, low extent).
+            # When hostile pixels are elongated crease structure, skip the sigma blend
+            # (or cap it <= 3.5) so the Stage 2 grain gate does not discard real crack masks.
+            _use_discriminator = os.environ.get("PIXREVIVE_STRUCTURE_DISCRIMINATOR", "1").strip().lower() not in ("0", "false", "no", "off")
+            if _use_discriminator:
+                hostile_u8 = ((residual >= _speck_amp) & (m > 0)).astype(np.uint8)
+                try:
+                    from ai.analysis.line_structure import LineStructureAnalyzer
+                    if LineStructureAnalyzer.classify_speckle_vs_crease(hostile_u8):
+                        return float(min(sigma_mad, 3.5))
+                except Exception:
+                    pass
+
             # Population amplitude: per-pixel MAD over the hostile speck
             # population only (robust to the flat floor dominating the median).
             hostiles = residual[(m > 0) & (residual >= _speck_amp)]
