@@ -109,6 +109,13 @@ class RestorationPipeline(
 
         self._colorizer_ready = threading.Event()
         self._models_ready = threading.Event()
+        # Serializes ALL background model loading. Torch model construction and
+        # checkpoint-loading are not thread-safe at the native layer: concurrent
+        # loads segfault (Windows "fatal exception: access violation" inside
+        # torch conv init / |load_from_state_dict / facexlib forward — the
+        # 3-of-3 full-suite crashes 2026-10-20, every dump showing the DDColor
+        # colorizer-loader racing _load_all_fast's GFPGAN checkpoint load).
+        self._load_lock = threading.Lock()
         self._model_load_failures: Dict[str, str] = {}
         self.inpainting_engine: Optional[InpaintingEngine] = None
         self._lama = None
@@ -134,32 +141,37 @@ class RestorationPipeline(
 
         def _load_all_fast():
             try:
-                try:
-                    from ai.restoration.lama_restorer import LamaRestorer
-                    self._lama = LamaRestorer()
-                    self._lama.load(self._device)
-                except Exception as exc:
-                    _record_failure("lama", exc)
-                    self._lama = None
+                # Serialized: see _load_lock comment in __init__. The colorizer
+                # thread now waits its turn behind this whole block, so torch
+                # never runs two model constructions / state_dict loads at once.
+                with self._load_lock:
+                    try:
+                        from ai.restoration.lama_restorer import LamaRestorer
+                        self._lama = LamaRestorer()
+                        self._lama.load(self._device)
+                    except Exception as exc:
+                        _record_failure("lama", exc)
+                        self._lama = None
 
-                try:
-                    self.face_restorer.load(self._device)
-                except Exception as exc:
-                    _record_failure("gfpgan", exc)
+                    try:
+                        self.face_restorer.load(self._device)
+                    except Exception as exc:
+                        _record_failure("gfpgan", exc)
 
-                try:
-                    self.super_resolution.load(self._device)
-                except Exception as exc:
-                    _record_failure("realesrgan", exc)
+                    try:
+                        self.super_resolution.load(self._device)
+                    except Exception as exc:
+                        _record_failure("realesrgan", exc)
 
-                self.inpainting_engine = InpaintingEngine(self._lama)
-                logger.info("[OK] Fast pipeline models loaded on %s.", self._device)
+                    self.inpainting_engine = InpaintingEngine(self._lama)
+                    logger.info("[OK] Fast pipeline models loaded on %s.", self._device)
             finally:
                 self._models_ready.set()
 
         def _load_colorizer():
             try:
-                self.colorizer.load(self._device)
+                with self._load_lock:
+                    self.colorizer.load(self._device)
             except Exception as exc:
                 _record_failure("ddcolor", exc)
             finally:

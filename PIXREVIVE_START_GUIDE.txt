@@ -1,0 +1,577 @@
+======================================================================
+ PIXREVIVE START GUIDE (verified 2026-10-18)
+ Every command below was either executed during verification
+ (marked "verified") or copied verbatim from a repo file (marked
+ "from file"). Anything not confirmed ends in "NOT VERIFIED" with
+ the reason. Repo root in this checkout:
+ D:\Desktop\project\PixRevive  (git branch: fix/remaining-limitations)
+======================================================================
+
+RP. REPO LAYOUT (verified)
+----------------------------------------------------------------------
+Top-level dirs: backend/  frontend/  tests/  scripts/  docs/
+                debug_output/  e2e/  experimental/  "test demos"/
+                _qa/  .freebuff/  .planning/  .agents .claude .codex
+                .github (CI: ci.yml, playwright.yml)
+It is a monorepo-style two-app layout: FastAPI backend in backend/,
+Vite React frontend in frontend/. No Makefile, no docker-compose,
+no root package.json. Single launcher run.bat at repo root.
+MONOREPO CONTENTS BELOW VERIFIED ONLY WHERE NAMED (NOT VERIFIED:
+experimental/orchestrator is a draft; its tests fail at import.)
+
+======================================================================
+1. OVERVIEW (verified)
+---------------------------------------------------------------------- Backend : Python 3.12.10 + FastAPI, started with uvicorn, port 8000.
+          Entry: backend/main.py ("main:app" with PYTHONPATH=backend).
+          Pipeline: 22 registered stages in
+          backend/ai/pipeline/stage_registry.py (ordered by progress
+          emission; 2x “internal” ones — refresh_faces and
+          semantic_validate — are excluded from the frontend dot row,
+          so 20 user-visible).
+          Of the 22, always-run or self-gating on content: deskew,
+          flat_field, despeckle, moire, analyze, face_detect, cast_fix,
+          damage_cluster_smooth, projector_grade, output_verify.
+          Run-gated (route_gate key): damage_detect+inpaint
+          (enable_repair), denoise+deblur (enable_denoise), colorize
+          (enable_colorization), face_restore (enable_face_restore),
+          pre_sr+super_res+sharpen (enable_sr), reimagine
+          (enable_reimagine, opt-in beta).
+          Models lifecycle: defect_segmenter and face_detector build
+          synchronously in RestorationPipeline.__init__ (restoration_
+          pipeline.py:94). Everything else loads in 2 background
+          threads: “fast-model-loader” = lama (LamaRestorer), gfpgan
+          (FaceRestorer.load), realesrgan (SuperResolution.load);
+          “colorizer-loader” = ddcolor. LAZY: Restormer deblur —
+          instantiated only on first gate-fire (restoration_pipeline
+          .py:115 “T-3: lazy — loads on first gate-fire only”), which is
+          why /api/health reports deblur:false on a healthy system.
+          Verified from /api/health on 2026-10-20 (cuda, after warmup):
+          {defect_segmenter:true, lama:true, deblur:false, gfpgan:true,
+           realesrgan:true, ddcolor:true}, load_errors:{}.
+Frontend: React 19 + Vite 8 (Tailwind 4), dev server port 5173,
+          entry "npm run dev" in frontend/. Talks to backend through
+          frontend/src/services/api.js (URL: VITE_API_BASE env var,
+          default http://localhost:8000). SSE route consumed:
+          POST /api/process-stream (backend/routers/image_router.py:233).
+Models  : weights in backend/ai/weights/ (14 GB already present in
+          this checkout): GFPGANv1.4 (349 MB), RealESRGAN_x4plus
+          (67 MB), big-lama.pt (206 MB), DDColor (~870 MB folder),
+          restormer motion_deblurring, realesr-general-x4v3,
+          plus diffusat/sdxl inpaint folders for the optional
+          reimagine stage. NOT VERIFIED: per-folder sizes of optional
+          diffusion subfolders.
+GPU     : NVIDIA GTX 1650 4 GB works (torch 2.13.0+cu126, CUDA 12.6,
+          cuda.is_available()=True). Tests are pinned to CPU by
+          tests/conftest.py, and that is the right choice: several
+          tests each construct a full RestorationPipeline and 4 GB
+          VRAM OOMs nondeterministically under GPU contention.
+
+======================================================================
+2. PREREQUISITES (verified where stated)
+----------------------------------------------------------------------
+Python     : exactly "C:\Program Files\Python312\python.exe"
+             (README.md "Requirements": system interpreter only,
+             NEVER a virtual environment; never bare python/pip/
+             pytest on PATH). Verified present: Python 3.12.10.
+Node       : v24.18.0 with npm 12.0.2 (verified). package.json has
+             no "engines" field, so other versions probably work -
+             NOT VERIFIED.
+Torch/CUDA : torch 2.13.0+cu126 with torchvision, installed via the
+             cu126 index per the comment in backend/requirements.txt
+             (verified commands below; skip the cu126 index URL for
+             a CPU-only machine).
+OS         : Windows commands appear verbatim below; Linux diffs
+             where they exist are marked. Run.bat is Windows-only.
+
+======================================================================
+3. FIRST-TIME SETUP (commands verbatim from README.md / requirements.txt)
+----------------------------------------------------------------------
+3.1 Backend dependencies (system Python only; NO venv):
+    & "C:\Program Files\Python312\python.exe" -m pip install -r backend/requirements.txt
+    On Linux: python3.12 -m pip install -r backend/requirements.txt
+    (from backend/requirements.txt header comment; Linux path marked
+    NOT VERIFIED - only the Windows interpreter was verified.)
+    NOTE before step 3.1 on a GPU machine, torch must be installed
+    from the PyTorch index FIRST (requirements.txt comment):
+    "C:\Program Files\Python312\python.exe" -m pip install torch
+        torchvision --index-url https://download.pytorch.org/whl/cu126
+    (Install order is from the file; the exact command line was not
+    re-executed this session - verified by pip report:
+    torch 2.13.0+cu126 present and functional.)
+3.2 Model weights - 2.4 GB canonical set:
+    "C:\Program Files\Python312\python.exe" backend/ai/download_weights.py
+    (from backend/ai/download_weights.py docstring; NOT RUN this
+    session - weights were already present, and rule was no-downloads
+    without approval. What it fetches: GFPGANv1.4, RealESRGAN_x4plus,
+    big-lama.pt, CodeFormer, facelib detection+parse, DDColor
+    checkpoint only. DDColor needs its inference sources vendored
+    separately:
+    "C:\Program Files\Python312\python.exe" backend/ai/install_ddcolor.py
+    - NOT RUN, from the script's own docstring.)
+    Optional diffusion stage (not needed for core pipeline):
+    sdxl_inpaint/ weights are present in this checkout. Command to
+    fetch: NOT VERIFIED (not needed for basic start).
+3.3 Frontend deps:
+    cd frontend && npm install   (NOT RUN this session; node_modules
+    already present and `npm run dev` verified. npm ls reports 5
+    extraneous @tensorflow/* packages; harmless at runtime.)
+3.4 Quick launcher (Windows, one command, does 1+2+3 checks itself):
+    run.bat
+    - checks Python 3.12 path, auto-npm-install if frontend
+      node_modules missing, auto-download weights if
+      backend/ai/weights/GFPGANv1.4.pth missing, sets
+      PIXREVIVE_TARGET_LONG_SIDE=4096, starts backend on 8000,
+      polls /api/health until ready, starts frontend on 5173,
+      then opens http://localhost:5173 in a browser. (Verified by
+      reading the file; NOT RUN end-to-end.)
+
+======================================================================
+4. START THE PROJECT (scripts created + smoke-tested 2026-10-18)
+----------------------------------------------------------------------
+One-command wrappers now exist in scripts/ (five of six
+smoke-tested this session; details at the end of this section):
+    scripts\start_backend.bat    scripts/start_backend.sh
+    scripts\start_frontend.bat   scripts/start_frontend.sh
+    scripts\run_tests.bat        scripts/run_tests.sh
+Each checks its prerequisites (interpreters, backend/main.py,
+weights marker GFPGANv1.4.pth, tests/conftest.py, frontend package
+files) and exits 1 with a clear message when something is missing;
+start_frontend also auto-runs npm install when node_modules is
+absent; run_tests always targets tests/ explicitly (a bare pytest
+sweep also collects broken experimental/orchestrator tests).
+Manual commands remain valid (below); the scripts are wrappers
+around exactly these.
+Backend (Windows PowerShell, from repo root):
+    $env:PYTHONPATH='backend'
+    & "C:\Program Files\Python312\python.exe" -m uvicorn main:app
+        --host 127.0.0.1 --port 8000
+    (README.md "Run" section; command line itself verified by
+    starting the server this session.)
+Backend Git-Bash equivalent (verified):
+    cd PixRevive && PYTHONPATH=backend "C:\Program Files\Python312\python.exe"
+        -m uvicorn main:app --host 127.0.0.1 --port 8000
+    NOTE: "main:app" only resolves because uvicorn's module lookup
+    honors PYTHONPATH; the file is backend/main.py.
+Backend health checks after start (verified):
+    http://127.0.0.1:8000/api/health
+    http://127.0.0.1:8000/docs        (FastAPI swagger, http 200)
+    GET /api/health shape (verified response):
+      {"status":"ok","url":"http://localhost:8000",
+       "models":{"defect_segmenter":true,"lama":true,"deblur":false,
+                 "gfpgan":true,"realesrgan":true,"ddcolor":false},
+       "load_errors":{},"device":"cpu","ready":true}
+    NOTE ddcolor:false here is the CPU-image path; device "cpu"
+    means no GPU was set. On a GPU run PIXREVIVE_DEVICE=cuda (see 8).
+Frontend:
+    cd frontend && npm run dev
+    (verified start: VITE v8.1.4 ready in 4163 ms,
+     Local: http://localhost:5173/, curl http 200.)
+Frontend build+preview alternative (from package.json scripts):
+    npm run build && npm run preview  (preview port 4173 - listed in
+    the backend's CORS default allowlist; preview itself NOT RUN.)
+Frontend lint:
+    npm run lint             (oxlint; NOT RUN this session)
+
+======================================================================
+5. VERIFY IT WORKS (smoke test, 3 steps)
+----------------------------------------------------------------------
+Step 1 - Backend truthful health check:
+    curl http://127.0.0.1:8000/api/health
+    GOOD result: HTTP 200 JSON like the /api/health sample above
+    with "ready":true and no model in load_errors. A model that says
+    false while load_errors is EMPTY is a degraded-but-honest state
+    (e.g. ddcolor on CPU-only machine) - the pipeline will still run
+    that stage's fallback path, so treat a false there as a warning,
+    not a failure. A truthy load_errors entry is a real failure.
+Step 2 - Open http://localhost:5173 in a browser and upload a small
+    image from the UI. The ~20-stage SSE progress stream should
+    appear over the upload card (count varies with route gates).
+Step 3 - Read the Restoration Report card in the UI after a run:
+    frontend/src/components/RestorationReportCard.jsx. VERIFIED
+    end-to-end 2026-10-20 with a real browser (Playwright-style
+    driver): injected a file into the real file input, change event
+    dispatched, card rendered ORIGINAL SOURCE + RESTORED OUTPUT,
+    “Process Image” clicked, restoration ran against the live cuda
+    backend, and the page ended in RESTORED OUTPUT + Restoration
+    Report (“2 notes”) + Download Result. Backend temp result file
+    was written (backend/temp_results/*.png, ~1.87 MB, 01:16).
+    Manual 4-step procedure if you cannot drive a browser:
+      1) Start backend (section 4) and confirm /api/health ready.
+      2) Open http://localhost:5173, drag any small image onto
+         the upload card; ORIGINAL SOURCE shows it.
+      3) Click “Process Image”; the progress bar walks the stage
+         names from stage_registry (task noise note is expected).
+      4) When done: RESTORED OUTPUT shows the image, Restoration
+         Report lists stage notes, Download Result saves the PNG.
+
+======================================================================
+6. TESTS (verified)
+----------------------------------------------------------------------
+Full suite (command verified by run --collect-only -q, count from
+    pytest's own summary; the run itself "verified" applies to the
+    collect step only - full suite NOT RUN this session to keep this
+    a read-only pass):
+    PYTHONPATH=backend "C:\Program Files\Python312\python.exe" -m pytest tests
+    - collected: 451 tests in tests/ (pytest-9.1.1).
+    - 4 collection errors from experimental/orchestrator/tests/*
+      (ModuleNotFoundError: No module named 'ai.orchestrator') - these
+      are OUTSIDE tests/ and only hit a bare `pytest` with no
+      path argument. Always pass the tests/ path explicitly.
+    - Windows missing-venv pip check note: gfpgan/facexlib/basicsr
+      complain "requires opencv-python, which is not installed" -
+      harmless: the project deliberately pins opencv-contrb
+      (4.12.0.88); gfpgan just doesn't account for the contrib fork.
+    Same interpreter rule as the server: never bare `pytest`
+    (README "Requirements" section). On this machine pytest comes
+    from "C:\Users\sangh\AppData\Roaming\Python\Python312\Scripts\pytest.exe"
+    (README "Test" section).
+Single file:
+    PYTHONPATH=backend "...python.exe" -m pytest tests/test_control_fixtures.py
+    (verified with --collect-only: 4 tests collected.)
+Known pre-existing failures (grep-verified names exist in the
+    tests; their "known failing" status observed across this
+    project's session history of full suite runs):
+    - tests/test_dust_field_fixes.py::TestDetectDustColonies::
+      test_colony_on_dark_substrate_is_masked
+    - tests/test_damage_fixtures.py::TestBenchmarkCase11MinorCreases::
+      test_minor_creases_detected_without_overreach
+      (known failing test; covers detection of minor paper creases
+      — the case11 fixture — without flagging undamaged areas,
+      i.e. no overreach) — re-observed in both full-suite runs
+      of 2026-10-18 (449 passed / 1 failed each time).
+    NOTE: the user's task list names a second known failure
+    "test_clean_photo_low_flake_blob_count" - the file currently
+    contains no test by that exact name; the closest is
+    tests/test_control_fixtures.py::test_clean_photo_...
+    _replica_threshold_documents_eye_halo_borderline which asserts
+    the halo blob count == exactly 2 (a documented edge case).
+    Exact pass/fail status of every single one right now: NOT
+    VERIFIED (full suite not rerun this session to keep this a
+    read-only task).
+
+======================================================================
+7. FIXTURES AND BASELINES (verified where stated)
+----------------------------------------------------------------------
+The canonical 5-fixture set lives in "test demos"/:
+    teared.jpg, image1.jpeg, image3.jpg.jpeg, bw.jpg,
+    SigShrink-denoising-of-the-Lena-image-corrupted-by-speckle-
+    noise-The-SWT-with-four.png    ("lena")
+ab_metrics harness (single session so GPU/CPU warm, no per-run
+model reload): .freebuff/ab_metrics.py, driver variants
+.freebuff/baseline_3x.py (n runs for all 5), .freebuff/ab_p2_
+driver.py and ab_p2_driver2.py (current flag A/B).
+Baseline metrics (3x median, generated 2026-10-17 10:23, counts
+get re-measured per run): docs/baselines/pre_fix.json
+Output artifacts land in .freebuff/ (ab_*.json, ab_out_*.png).
+Bigger sweep example (17 fixture images x 1 run, whole dataset):
+    .freebuff/matrix_runner.py + .freebuff/matrix_results.json
+GPU run-to-run variance on identical code is REAL and was measured
+ Rule of thumb: run everything n>=3 and compare MEDIANs; speck_count
+ on teared was reported between 224 and 360 minute-to-minute on the
+ same code (canvas measurement noise) in earlier runs, and 411-470
+ range in this session's matrix sweep. Do not chase single-run
+ deltas smaller than this spread.
+
+======================================================================
+8. ENVIRONMENT VARIABLES AND FEATURE FLAGS (verified as read by the code)
+----------------------------------------------------------------------
+All backend flags are read with os.environ.get / os.getenv in
+backend/ai/**. Frontend flag is VITE_ (Vite injects import.meta.env
+at build time). Table: name | default | file that reads it | purpose
+| status
+
+  PIXREVIVE_DEVICE            cpu    (tests/conftest.py + pipeline)
+                              device select cpu/cuda  [exists]
+  PIXREVIVE_DEBUG             ""     (several stage files)
+                              verbose per-stage output [exists]
+  PIXREVIVE_TARGET_LONG_SIDE  2048-ish per run.bat comment but
+                              run.bat sets 4096 (renderer plan
+                              states "HD default 4K") [exists]
+  PIXREVIVE_CORS_ORIGINS      ""     (backend/main.py:25)
+                              override default localhost CORS list
+                              [exists]
+  PIXREVIVE_ADMIN_TOKEN       ""     (backend/routers/admin_router
+                              .py:19) gates /api/admin [exists]
+  PIXREVIVE_POST_SR_SEAM_FEATHER  OFF  (backend/ai/pipeline/stages
+                              /finish_stages.py) [exists, default
+                              OFF as shipped]
+  PIXREVIVE_GRADE_WASH_DAMP   DOES NOT EXIST YET - no code match.
+                              Planned for phase P1, not implemented
+                              after the P1 no-go decision.
+All other PIXREVIVE_* / REIMAGINE_* flags verified present in code
+(grep of every string constant): BLOB_INPAINT, BRIGHT_FILL,
+CAST_MAX_FRAC, CHROMA_DISCIPLINE, CHROMA_SNAP_RAW,
+CHROMA_VALIDATOR, CLIP_GUARD, DDCOLOR_AUTODOWNLOAD,
+DDCOLOR_INPUT_SIZE, DDCOLOR_LONLY, DDCOLOR_MAX_SAT,
+DDCOLOR_OPACITY, DDCOLOR_VARIANT, DDCOLOR_WEIGHTS, DUST_COLONIES,
+EYE_HARMONY, FACEID_WEIGHTS, FACE_DRIP, FACE_NECK_FIX,
+FACE_SHARPEN, GRAIN, GRAY_SKIP, HAIR_GUARD, HF_GUARD, MS_FLAKES,
+NLM_CAP, POST_SR_CAST, RAGGED_BORDER, SEAM_QUALITY, SPECK_SWEEP,
+STRUCTURE_GUARD, TM_FIELD, REIMAGINE_FACEID, REIMAGINE_FLAG_COSINE,
+REIMAGINE_FORCE_TIER, REIMAGINE_IP_SCALE, REIMAGINE_PASS_COSINE.
+Their exact defaults live with their use sites in backend/ai/.
+(full per-flag doc NOT VERIFIED - out of scope for a start guide;
+grep the literal name in backend/ai to find each.)
+Frontend:
+  VITE_API_BASE               http://localhost:8000
+                              frontend/src/services/api.js:9
+                              [exists]
+  frontend/.env.example copies to .env.local per the file's own
+  comment. Copy-to-local itself NOT RUN this session.
+
+======================================================================
+9. GIT SAFETY (verified)
+----------------------------------------------------------------------
+Branch: fix/remaining-limitations (this checkout and the session's
+    working branch). git log at guide time:
+      a13e750 P2: flag-gated post-SR seam feather
+      65b76d8 P3: dust-colony fixture calibrated gates + real controls
+    183 untracked artifact files (_qa/, .freebuff/, docs/baselines,
+    debug_output/) - do not git-add blindly, commit only what each
+    change needs.
+Tree-touching rule from this project's contributor sessions: no
+    git checkout / reset / restore without running `git stash`
+    first and telling the user; never discard other people's
+    uncommitted work.
+Atomic commit convention (seen in actual history):
+    git add <only the files you changed>
+    git commit -m "<phase>: <what> (<flag>, <default>)"
+    with测试 multi-line bodies listing per-file decisions.
+
+======================================================================
+10. GSD WORKFLOW (status verified this session)
+----------------------------------------------------------------------
+`gsd` is NOT on PATH (verified: `which gsd` fails in this shell).
+The skill files live at
+    ~/.config/freebuff-desktop/account-skills/.../gsd-*/SKILL.md
+and are invoked by mentioning the skill (e.g. "use gsd-debug").
+Only /gsd:progress, /gsd:debug and /gsd:quick have been exercised
+manually at the same evidence standard in this project; every GSD
+step so far ran WITHOUT typed GSD agents (SDK host limitation,
+disclosed in prior reports). Install command for a new project:
+NOT VERIFIED (no install script found in the repo; the skills are
+account-synced from the cloud, not repo-local).
+
+======================================================================
+11. TROUBLESHOOTING (only observed or code-verified causes)
+----------------------------------------------------------------------
+Segfault in the full suite (observed 3/3 runs, 2026-10-18): FIXED 2026-10-20.
+    Three consecutive full-suite runs through scripts/run_tests.sh
+    died with "Windows fatal exception: access violation" at ~78%
+    progress, entering tests/test_restoration_regressions.py
+    (logs .freebuff/fullsuite_guide.log, fullsuite_run2.log,
+    fullsuite_run3.log). Pytest's faulthandler traceback showed the
+    fatal frame in the DDColor colorizer loader thread every time
+    (_load_colorizer -> ddcolor checkpoint load / model build),
+    racing the fast-loader thread that loads GFPGAN/Real-ESRGAN/
+    defect_segmenter - i.e. the TWO concurrent daemon loader
+    threads RestorationPipeline.__init__ starts
+    doing torch native I/O/allocation simultaneously. NOT a GPU
+    issue and not parallel workers: tests/conftest.py forces
+    PIXREVIVE_DEVICE=cpu and the suite runs single-process.
+    THE FIX: both loader threads now serialize behind one
+    threading.Lock (self._load_lock in
+    backend/ai/pipeline/restoration_pipeline.py). After the fix,
+    two consecutive full-suite runs completed cleanly (449 passed,
+    1 skipped each; no access violation) - the only failure is the
+    pre-existing Case11 fixture issue described in section 5.
+    Historical workaround (kept for reference): run the heavy file standalone
+    (PYTHONPATH=backend python -m pytest
+    tests/test_restoration_regressions.py), then invoke run_tests.sh
+    with --deselect for the already-passed file's nodes, or simply
+    re-run the part after the crash with run_tests.sh + a node
+    range. A re-run after a crash with --lf finishes the remainder.
+CUDA OOM on a 4 GB card: tests/conftest.py documents that running
+    many pipeline instances on CUDA OOMs nondeterministically.
+    It forces PIXREVIVE_DEVICE=cpu for the whole pytest run, and
+    warns that an explicit PIXREVIVE_DEVICE=cuda WILL BE HONORED
+    if you export it deliberately. If GPU tests die with "memory
+    allocation failed ... free: 0", drop back to the default CPU
+    run.
+Stale backend after a .py edit: uvicorn is started WITHOUT
+    --reload in both README instructions and run.bat. Restart the
+    backend process to pick up code changes (both sources agree).
+Port in use: not handled anywhere in code (uvicorn will just
+    error). Check with netstat or taskkill the previous python.
+Missing weights: run.bat auto-runs download_weights.py if
+    backend/ai/weights/GFPGANv1.4.pth is missing, and the main
+    pipeline separately reports model==false with a load_errors
+    entry at /api/health. A bare-model "false" + empty
+    load_errors (like ddcolor) is honest degradation, not OK to
+    ignore permanently.
+CORS / wrong backend URL: the frontend targets
+    import.meta.env.VITE_API_BASE || http://localhost:8000
+    (frontend/src/services/api.js). If you move the backend,
+    either set VITE_API_BASE in frontend/.env.local (file exists
+    as .env.example) or rely on the default ports matching. The
+    backend's default CORS allowlist covers 5173/4173
+    (backend/main.py). Not verified: cross-origin behavior for
+    https targets.
+Wrong python: bare `python` on PATH is explicitly forbidden by
+    the README; always use the full path to
+    "C:\Program Files\Python312\python.exe" or the surrogate
+    pytest.exe path shown in section 6.
+VRAM budget for a full cuda restore run on a 4 GB card: the lena
+    fixture peaked at 3405 MB / 4096 MB measured at 1 Hz
+    (.freebuff/vram_lena.csv, 2026-10-20) with GPU util 99%. That is
+    inside budget but close — close other GPU apps first; an OOM here
+    looks like a hung request (see CUDA OOM entry above).
+Dependencies "broken" (pip check noise): basicsr/facexlib/gfpgan
+    monoliths demand opencv-python although the project pins
+    opencv-contrib-python; the tracker note is inside
+    backend/requirements.txt itself (choose contrib, never both).
+experimental/orchestrator/*: from-repo test collection errors
+    (missing ai.orchestrator module) - treating this as a known
+    draft area; only tests/ is the supported suite.
+
+======================================================================
+12. VERIFICATION LOG (command | result | status)
+----------------------------------------------------------------------
+python --version                     Python 3.12.10     verified
+node --version                       v24.18.0           verified
+npm --version                        12.0.2             verified
+"...\Python312\python.exe" -c
+  "import torch; ..."                2.13.0+cu126 12.6 True
+                                                        verified
+nvidia-smi (GPU name, 4096 MB,       GTX 1650           verified
+  0 MiB free at check time)
+pip check (4 noise lines about       documented         verified
+  opencv-python vs contrib)
+npm ls --depth=0 (5 extraneous       noted              verified
+  @tensorflow/* pkgs, nothing else)
+PYTHONPATH=backend python -c
+  "from main import app"             10 routes, import  verified
+  import backend app module          OK
+pytest --collect-only -q tests       451 collected      verified
+pytest --collect-only -q
+  experimental/orchestrator/tests/   4 import errors    verified
+uvicorn main:app --app-dir backend   health JSON 200,   verified
+  + curl /api/health                 docs 200
+npm run dev (frontend/)              Vite 8.1.4 ready   verified
+                                     5173 http 200
+run.bat end-to-end
+  (cmd //c "D:\...\run.bat";
+  log .freebuff/
+  runbat_e2e2.log)                   launcher waits for verified
+                                      health, then prints
+                                      "API health:
+                                      http://127.0.0.1:8000/
+                                      api/health" and "App:
+                                      http://localhost:5173";
+                                      both answered 200;
+                                      backend+frontend+launcher
+                                      all stopped after
+download_weights.py and install_     NOT RUN            not run:
+ddcolor.py                                              weights
+                                                        exist; no
+                                                        downloads
+scripts/run_tests.sh (full sweep)    449 passed, 1      verified
+                                     skipped, 1 failed
+                                     (pre-existing
+                                     case11 creases test)
+scripts/run_tests.bat help line      smoke: prints OK   verified
+                                     banner + pytest
+                                     start banner
+scripts/start_backend.sh + health    /api/health JSON   verified
+                                     200 via script
+scripts/start_backend.bat banner     smoke: OK banner   verified
+scripts/start_frontend.sh + 5173     vite 200 via       verified
+                                     script
+scripts/start_frontend.bat
+  (e2e via cmd, log
+  .freebuff/sf_bat_e2e2.log)         Vite 8.1.4 ready,   verified
+                                      5173 HTTP 200 with
+                                      React dev HTML
+Full pytest suite run
+  (bash scripts/run_tests.sh;
+  log .freebuff/
+  fullsuite_guide2.log)              449 passed, 1      verified
+                                      skipped, 1 failed
+                                      (pre-existing
+                                      case11 creases
+                                      test) in 263.58s
+UI upload smoke
+  test (browser injects
+  bw.jpg into the real
+  file input, change
+  event dispatched;
+  backend from run.bat)
+  (artifact evidence:
+  DOM snapshot showed
+  RESTORED OUTPUT +
+  report card 4 notes +
+  Download Result link;
+  result PNG at
+  backend/temp_results/
+  cd5a34778af3.png,
+  865217 bytes, written
+  17:49)                   restored panel    verified
+                                      rendered and
+                                      image loaded;
+                                      ~1 min end-to-end
+                                      (page-poll
+                                      granularity); UI
+                                      showed "Failed to
+                                      fetch" only after
+                                      the backend was
+                                      stopped (expected;
+                                      snapshot taken
+                                      post-cleanup)
+End-to-end
+  POST /api/process-stream
+  (check_progress_stream.py
+  on bw.jpg; log .freebuff/
+  sse_audit_bw.log)                  18 progress events verified
+                                      monotonic; stage ids
+                                      known to UI; terminal
+                                      complete; 844 KB PNG
+                                      result fetched; 5.8 s
+                                      end-to-end on cuda
+ Larger-fixture SSE audit
+  (scripts/check_progress_stream.py
+  on lena SigShrink .png, cuda,
+  log .freebuff/sse_audit_lena.log,
+  VRAM 1 Hz poll .freebuff/
+  vram_lena.csv)                     19 progress events, verified
+                                      monotonic; terminal complete;
+                                      1829 KB PNG result;
+                                      PEAK VRAM 3405 MB of 4096
+                                      (GTX 1650 4 GB, GPU util 99%);
+                                      26.7 s end-to-end incl. PNG
+                                      fetch [PASS]
+UI upload smoke
+  test (real browser, file input
+  inject + Process Image, cuda
+  backend run started 2026-10-20;
+  artifact: RESTORED OUTPUT panel,
+  Restoration Report “2 notes”,
+  Download Result present;
+  backend/temp_results/d06717aff0e7
+  .png 1872887 bytes 01:16)          end-to-end PASS   verified
+                                      (report honesty notes
+                                      expected on the 1px
+                                      synthetic test file)
+fetch existed sdxl_inpaint/weights   14 GB present      verified
+  folder listing                     (weights present
+                                     - no download)
+SSE raw capture
+  (curl -sN -X POST
+  http://127.0.0.1:8000/
+  api/process-stream
+  -F "file=@test demos/
+  bw.jpg" data defaults;
+  log .freebuff/
+  sse_raw_stream.txt)   wire format confirmed:   verified
+                                      event: progress\n
+                                      data: {"stage":...}
+                                      sample line received:
+                                      data: {"stage": "deskew",
+                                      "percent": 1, "message":
+                                      "Detecting and correcting
+                                      scan skew..."}; terminal
+                                      event: complete with
+                                      task_id 88e992e10b4c
+
+======================================================================
+END OF GUIDE
+======================================================================
