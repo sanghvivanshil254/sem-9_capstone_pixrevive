@@ -386,7 +386,13 @@ class SuperResolution(BaseRestorer):
                 f"SR: source {orig_w}×{orig_h} already at/above target long side "
                 f"{target_long} — skipping ×4 model, resampling directly."
             )
-            out_np = _post_sr_sharpen(_resize_to_long_side(img_np_sr, target_long), strength=0.38)
+            _sharpen_gate = os.environ.get("PIXREVIVE_SHARPEN_GATE", "1").strip().lower() not in ("0", "false", "no", "off")
+            blur_score = float((context.image_metadata or {}).get("blur_score", 0.0))
+            resized = _resize_to_long_side(img_np_sr, target_long)
+            if _sharpen_gate and blur_score > 200.0:
+                out_np = resized
+            else:
+                out_np = _post_sr_sharpen(resized, strength=0.38)
             context.working_image = out_np
             context.add_log(f"SR: final output size {out_np.shape[1]}×{out_np.shape[0]}.")
             return out_np

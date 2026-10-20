@@ -280,3 +280,54 @@ def test_projector_grade_pipeline_flag_skips():
     assert not ctx.image_metadata.get("projector_grade_applied", True)
     assert np.array_equal(pre, ctx.working_image)
 
+
+def test_sharpen_gate_skips_on_sharp_image(monkeypatch):
+    """PIXREVIVE_SHARPEN_GATE=1 must skip Stage 10 unsharp pass on images with blur_score > 200.0."""
+    monkeypatch.setenv("PIXREVIVE_SHARPEN_GATE", "1")
+    monkeypatch.setenv("PIXREVIVE_SPECK_SWEEP", "0")
+    from ai.pipeline.restoration_pipeline import RestorationPipeline
+    pipe = RestorationPipeline(device="cuda")
+    cam = cv2.cvtColor(skimage.data.camera(), cv2.COLOR_GRAY2RGB)
+    ctx = PipelineContext(cam.copy(), {"blur_score": 450.0, "faces": [{"bbox": [50, 50, 200, 200]}]})
+    pre = ctx.working_image.copy()
+
+    pipe._stage_10_post_sr_sharpen(ctx, None)
+    assert any("Skipped unsharp pass (image already sharp" in l for l in ctx.processing_log), "Skip log missing"
+    assert not ctx.image_metadata.get("stage_10_sharpen_applied", True), "stage_10_sharpen_applied should be False"
+    assert np.array_equal(pre, ctx.working_image), "Canvas should be unchanged when unsharp is skipped"
+
+
+def test_sharpen_gate_applies_on_blurry_image(monkeypatch):
+    """PIXREVIVE_SHARPEN_GATE=1 must apply Stage 10 sharpening without broadcast crash on blurry portrait."""
+    monkeypatch.setenv("PIXREVIVE_SHARPEN_GATE", "1")
+    monkeypatch.setenv("PIXREVIVE_SPECK_SWEEP", "0")
+    from ai.pipeline.restoration_pipeline import RestorationPipeline
+    pipe = RestorationPipeline(device="cuda")
+    # Synthetic blurry portrait
+    img = np.zeros((300, 400, 3), dtype=np.uint8)
+    cv2.circle(img, (200, 150), 60, (200, 200, 200), -1)
+    ctx = PipelineContext(img.copy(), {"blur_score": 120.0, "faces": [{"bbox": [140, 90, 260, 210]}]})
+    pre = ctx.working_image.copy()
+
+    pipe._stage_10_post_sr_sharpen(ctx, None)
+    assert any("Edge-directed multi-scale crispness applied" in l for l in ctx.processing_log), "Crispness log missing"
+    assert ctx.image_metadata.get("stage_10_sharpen_applied", False), "stage_10_sharpen_applied should be True"
+    assert not np.array_equal(pre, ctx.working_image), "Sharpening should modify the blurry canvas"
+
+
+def test_sharpen_gate_flag_zero_restores_legacy(monkeypatch):
+    """PIXREVIVE_SHARPEN_GATE=0 must apply Stage 10 sharpening even when blur_score > 200.0."""
+    monkeypatch.setenv("PIXREVIVE_SHARPEN_GATE", "0")
+    monkeypatch.setenv("PIXREVIVE_SPECK_SWEEP", "0")
+    from ai.pipeline.restoration_pipeline import RestorationPipeline
+    pipe = RestorationPipeline(device="cuda")
+    cam = cv2.cvtColor(skimage.data.camera(), cv2.COLOR_GRAY2RGB)
+    ctx = PipelineContext(cam.copy(), {"blur_score": 450.0, "faces": []})
+    pre = ctx.working_image.copy()
+
+    pipe._stage_10_post_sr_sharpen(ctx, None)
+    assert any("Edge-directed multi-scale crispness applied" in l for l in ctx.processing_log), "Legacy sharpen should run"
+    assert ctx.image_metadata.get("stage_10_sharpen_applied", False), "stage_10_sharpen_applied should be True"
+    assert not np.array_equal(pre, ctx.working_image), "Legacy sharpen should modify canvas"
+
+

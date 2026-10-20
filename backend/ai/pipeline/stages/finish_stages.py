@@ -1036,6 +1036,7 @@ class FinishStagesMixin:
             # and are then amplified by sharpening. Remove connected bright
             # AND dark specks below a size cap that is far below anything with
             # real photographic content (faces/strands are >> 64px connected).
+            speck_sweep_modified = False
             PIXREVIVE_SPECK_SWEEP = os.environ.get(
                 "PIXREVIVE_SPECK_SWEEP", "1"
             ).strip().lower() not in ("0", "false", "no", "off")
@@ -1061,6 +1062,7 @@ class FinishStagesMixin:
                                 kill[lbl == i] = 255
                                 removed += 1
                         if removed:
+                            speck_sweep_modified = True
                             kill_f = cv2.GaussianBlur(
                                 (kill.astype(np.float32) / 255.0), (0, 0), sigmaX=1.1
                             )[..., None]
@@ -1082,6 +1084,31 @@ class FinishStagesMixin:
                             )
                 except Exception as sweep_exc:
                     context.add_log(f"Stage 10 speck sweep skipped: {sweep_exc}")
+
+            # Fix 5: Sharpen Gate (PIXREVIVE_SHARPEN_GATE, default 1).
+            # Avoids double-sharpening and high-frequency halo explosion on scans that are
+            # already sharp (blur_score > 200.0) or where sharpening is explicitly opted out.
+            PIXREVIVE_SHARPEN_GATE = os.environ.get(
+                "PIXREVIVE_SHARPEN_GATE", "1"
+            ).strip().lower() not in ("0", "false", "no", "off")
+            meta = context.image_metadata or {}
+            blur_score = float(meta.get("blur_score", 999.0))
+            is_sharp = blur_score > 200.0
+            enable_sharpen_flag = context.pipeline_flags.get("enable_sharpen", True)
+
+            if PIXREVIVE_SHARPEN_GATE and (is_sharp or not enable_sharpen_flag):
+                context.add_log(
+                    f"Stage 10 Sharpen: Skipped unsharp pass (image already sharp: "
+                    f"blur_score={blur_score:.1f} > 200.0, PIXREVIVE_SHARPEN_GATE=1)."
+                )
+                context.image_metadata["stage_10_sharpen_applied"] = False
+                if speck_sweep_modified:
+                    context.working_image = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
+                context.end_timer("post_sr_sharpen")
+                DebugLogger.save_stage(context, "10_after_sharpen")
+                return
+
+            context.image_metadata["stage_10_sharpen_applied"] = True
 
             # 1. Edge & Contour Detection via Sobel Gradient Magnitude
             gx = cv2.Sobel(l_chan, cv2.CV_32F, 1, 0, ksize=3)
@@ -1127,7 +1154,8 @@ class FinishStagesMixin:
                     face_damp[py1:py2, px1:px2] = 0.6
                 if any_face:
                     face_damp = cv2.GaussianBlur(face_damp, (0, 0), sigmaX=float(max(3.0, min(h_img, w_img) * 0.01)))
-                    face_damp = np.clip(face_damp, 0.6, 1.0)[..., None]
+                    # Keep face_damp 2D (H, W) so it broadcasts cleanly with edge_weight and diff_contour
+                    face_damp = np.clip(face_damp, 0.6, 1.0)
                     # Damp only the contour term inside faces; keep micro detail.
                     l_crisp = l_chan + 0.25 * diff_micro + (0.45 * face_damp) * edge_weight * diff_contour
                 else:
