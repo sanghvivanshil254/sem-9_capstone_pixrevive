@@ -418,4 +418,80 @@ def test_despeckle_guard_allows_real_impulses_on_damaged_fixture(monkeypatch):
     assert ctx.image_metadata.get("specks_suppressed", False)
 
 
+# ---------------------------------------------------------------------------
+# Fix 7: Crack Continuity & Diagonal Mask Truncation Tests
+# ---------------------------------------------------------------------------
+
+def test_crack_continuity_default_is_off(monkeypatch):
+    """PIXREVIVE_CRACK_CONTINUITY must default to 0 / False when unset."""
+    monkeypatch.delenv("PIXREVIVE_CRACK_CONTINUITY", raising=False)
+    assert os.environ.get("PIXREVIVE_CRACK_CONTINUITY", "0").strip().lower() not in ("1", "true", "yes", "on")
+
+
+def test_crack_continuity_preserves_diagonal_cracks_in_scenegate(monkeypatch):
+    """
+    Diagonal cracks have bounding box width ~= height (aspect ratio ~1.0 < 3.0).
+    PIXREVIVE_CRACK_CONTINUITY=1 uses rotation-invariant moment elongation so
+    diagonal tears are recognized as damage and not pruned as scene blobs.
+    """
+    # 500x500 test canvas with realistic background texture
+    h, w = 500, 500
+    gray_bg = np.random.RandomState(42).randint(110, 140, (h, w, 3), dtype=np.uint8)
+    
+    # 5px wide diagonal crack running from (50, 450) to (450, 50)
+    damage_mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.line(damage_mask, (50, 450), (450, 50), 255, 5)
+    
+    # Test baseline (0): SceneGate checks only max(w, h)/min(w, h)
+    monkeypatch.setenv("PIXREVIVE_CRACK_CONTINUITY", "0")
+    monkeypatch.setenv("PIXREVIVE_SCENE_GATE", "1")
+    ctx_0 = PipelineContext(gray_bg.copy())
+    ctx_0.damage_masks["fractures"] = damage_mask.copy()
+    out_0 = MaskRefiner.refine(damage_mask.copy(), ctx_0)
+    # The diagonal crack has bbox 400x400 (aspect 1.0 < 3.0), no popout on flat bg, so SceneGate prunes it
+    assert np.sum(out_0 > 0) == 0, "Expected baseline SceneGate to prune diagonal crack due to axis-aligned aspect ratio trap"
+    
+    # Test Fix 7 (1): SceneGate uses moment-based rotation-invariant elongation
+    monkeypatch.setenv("PIXREVIVE_CRACK_CONTINUITY", "1")
+    ctx_1 = PipelineContext(gray_bg.copy())
+    ctx_1.damage_masks["fractures"] = damage_mask.copy()
+    out_1 = MaskRefiner.refine(damage_mask.copy(), ctx_1)
+    assert np.sum(out_1 > 0) > 1000, f"Expected Fix 7 to preserve diagonal crack, got {np.sum(out_1 > 0)} px"
+
+
+def test_crack_continuity_preserves_through_eye_crack(monkeypatch):
+    """
+    PIXREVIVE_CRACK_CONTINUITY=1 preserves thin linear crack strokes cutting across ocular
+    landmarks, while still zeroing out broad area cavity fills that would destroy the pupil.
+    """
+    h, w = 400, 400
+    gray_bg = np.full((h, w, 3), 128, dtype=np.uint8)
+    
+    # Face covering center of frame with left eye landmark at (150, 150)
+    face_meta = [{
+        "bbox": [50, 50, 350, 350],
+        "landmarks": [[150, 150], [250, 150], [200, 200], [170, 260], [230, 260]],
+    }]
+    
+    # Crack line cutting right through the eye at (150, 150)
+    crack_mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.line(crack_mask, (100, 120), (200, 180), 255, 3)
+    
+    # Baseline (0): unconditionally draws solid black circle over (150, 150)
+    monkeypatch.setenv("PIXREVIVE_CRACK_CONTINUITY", "0")
+    ctx_0 = PipelineContext(gray_bg.copy(), {"faces": face_meta})
+    ctx_0.damage_masks["fractures"] = crack_mask.copy()
+    out_0 = MaskRefiner.refine(crack_mask.copy(), ctx_0)
+    # At the eye landmark (150, 150), baseline circle zeroing leaves a 0-hole
+    assert out_0[150, 150] == 0, "Baseline should zero out pixels at eye landmark"
+    
+    # Fix 7 (1): selectively protects broad fills, preserving thin crack stroke through eye
+    monkeypatch.setenv("PIXREVIVE_CRACK_CONTINUITY", "1")
+    ctx_1 = PipelineContext(gray_bg.copy(), {"faces": face_meta})
+    ctx_1.damage_masks["fractures"] = crack_mask.copy()
+    out_1 = MaskRefiner.refine(crack_mask.copy(), ctx_1)
+    assert out_1[150, 150] > 0, "Fix 7 should preserve thin crack stroke cutting through eye"
+
+
+
 
