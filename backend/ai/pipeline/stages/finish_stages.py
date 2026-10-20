@@ -1214,6 +1214,7 @@ class FinishStagesMixin:
             # Step 3: Merge calibrated tonal response
             lab_graded = cv2.merge([l_curved, a, b])
             context.working_image = cv2.cvtColor(lab_graded, cv2.COLOR_LAB2RGB)
+            context.image_metadata["projector_grade_applied"] = True
             context.add_log("Stage 10b ProjectorGrade: Tamed CLAHE (clip=0.85, grid=16-32) and natural film curve applied.")
 
             # J-10 (2026-10-12 forensic pass): film-grain re-injection.
