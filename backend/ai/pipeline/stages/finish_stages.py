@@ -451,12 +451,32 @@ class FinishStagesMixin:
             # reduction contract still holds in the undamaged branches.
             # PIXREVIVE_NLM_CAP=0 reverts to the unbounded legacy scales.
             _nlm_cap = float(os.environ.get("PIXREVIVE_NLM_CAP", "14.0") or "0")
+            _denoise_gate = os.environ.get("PIXREVIVE_DENOISE_FLOOR_GATE", "1").strip().lower() not in (
+                "0", "false", "no", "off"
+            )
+            noise_score_meta = context.image_metadata.get("noise_score")
+
+            # Fix 3: Denoise Floor Gate.
+            # Clean images with negligible noise floor (sigma <= 2.5 and noise_score <= 2.5)
+            # bypass Stage 5 NLM entirely, preventing high-frequency loss on pristine scans.
+            if _denoise_gate and noise_score_meta is not None and not bg_damaged:
+                if sigma_noise <= 2.5 and float(noise_score_meta) <= 2.5:
+                    context.add_log(
+                        f"Stage 5 Denoise: Bypassed by noise floor gate "
+                        f"(sigma={sigma_noise:.2f} <= 2.5, noise_score={float(noise_score_meta):.2f} <= 2.5; clean image)."
+                    )
+                    context.image_metadata["denoise_applied"] = False
+                    return
+
             if bg_damaged:
                 h_bg = max(11.0, 1.4 * sigma_noise)
                 if _nlm_cap > 0:
                     h_bg = min(h_bg, _nlm_cap)
             elif sigma_noise > 7.0:
                 h_bg = max(11.5, 1.25 * sigma_noise)
+            elif _denoise_gate and noise_score_meta is not None and sigma_noise <= 5.0:
+                # Fix 3: Scale filter parameters down with noise floor instead of hard clamping to 6.5/7.5/5.5
+                h_bg = max(1.2, 0.95 * sigma_noise)
             else:
                 h_bg = max(6.5, 0.95 * sigma_noise)
             # G1 note: an h_bg cap here was tried and removed — it broke the
@@ -465,12 +485,18 @@ class FinishStagesMixin:
             # protect map below and the HF re-injection guard, not by
             # weakening the filter globally. The J-8 cap above targets only
             # the DAMAGE branch, where σ is polluted by damage energy.
-            h_mid = max(7.5, 1.10 * sigma_noise)
-            if _nlm_cap > 0 and bg_damaged:
-                h_mid = min(h_mid, _nlm_cap * 0.85)
+            if _denoise_gate and noise_score_meta is not None and not bg_damaged and sigma_noise <= 5.0:
+                h_mid = max(1.2, 1.10 * sigma_noise)
+            else:
+                h_mid = max(7.5, 1.10 * sigma_noise)
+                if _nlm_cap > 0 and bg_damaged:
+                    h_mid = min(h_mid, _nlm_cap * 0.85)
+
             # Face zone: cap at 1.10x sigma regardless of small-face flag to retain skin texture.
             if is_small_face and sigma_noise > 4.0:
                 h_face = min(max(7.0, 1.10 * sigma_noise), 12.0)
+            elif _denoise_gate and noise_score_meta is not None and not bg_damaged and sigma_noise <= 5.0:
+                h_face = max(1.2, 0.95 * sigma_noise)
             else:
                 h_face = max(5.5, 0.95 * sigma_noise)
             if _nlm_cap > 0:

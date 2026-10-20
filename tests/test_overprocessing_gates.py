@@ -176,3 +176,63 @@ def test_option_3_unblocks_case9_colorization():
     pipe._stage_6_colorization(ctx, None)
     assert ctx.image_metadata.get("colorization_applied", False), "Colorization was not applied to case9"
     assert not ctx.image_metadata.get("colorization_rolled_back", False), "Colorization was rolled back on case9"
+
+
+def test_denoise_floor_gate_bypasses_negligible_noise():
+    """Pristine image with sigma <= 2.5 and noise_score <= 2.5 must bypass Stage 5 NLM completely."""
+    from ai.pipeline.restoration_pipeline import RestorationPipeline
+    pipe = RestorationPipeline(device="cuda")
+    clean = np.full((100, 100, 3), 128, dtype=np.uint8)
+    qa = QualityAnalyzer()
+    meta = qa.analyze(clean)
+    ctx = PipelineContext(clean.copy(), meta)
+    pre = ctx.working_image.copy()
+
+    pipe._stage_5_spatially_gated_denoise(ctx, [], None)
+    assert any("Bypassed by noise floor gate" in l for l in ctx.processing_log), "Floor gate bypass log missing"
+    assert not ctx.image_metadata.get("denoise_applied", True), "denoise_applied should be False when bypassed"
+    assert np.array_equal(pre, ctx.working_image), "Canvas should be bitwise identical when bypassed"
+
+
+def test_denoise_floor_gate_scales_down_h_on_camera(monkeypatch):
+    """Pristine camera image must scale h down proportionally to sigma (1.48) and keep HF >= 0.95."""
+    from ai.pipeline.restoration_pipeline import RestorationPipeline
+    pipe = RestorationPipeline(device="cuda")
+    cam = cv2.cvtColor(skimage.data.camera(), cv2.COLOR_GRAY2RGB)
+    qa = QualityAnalyzer()
+    meta = qa.analyze(cam)
+    ctx = PipelineContext(cam.copy(), meta)
+    pre = ctx.working_image.copy()
+
+    pipe._stage_5_spatially_gated_denoise(ctx, [], None)
+    logs = [l for l in ctx.processing_log if "h_face=" in l]
+    assert logs, "Stage 5 log missing"
+    import re
+    h_bg = float(re.search(r"h_bg=([\d.]+)", logs[-1]).group(1))
+    assert h_bg <= 2.5, f"Expected scaled h_bg <= 2.5, got {h_bg}"
+
+    # Calculate HF retention
+    g0 = cv2.cvtColor(pre, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    g1 = cv2.cvtColor(ctx.working_image, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    v0 = float(np.var(cv2.Laplacian(g0, cv2.CV_32F)))
+    v1 = float(np.var(cv2.Laplacian(g1, cv2.CV_32F)))
+    hf = v1 / max(v0, 1e-6)
+    assert hf >= 0.95, f"Expected HF retention >= 0.95, got {hf:.3f}"
+
+
+def test_denoise_floor_gate_flag_zero_restores_legacy(monkeypatch):
+    """PIXREVIVE_DENOISE_FLOOR_GATE=0 must restore legacy clamped floors (h_bg >= 6.5, h_mid >= 7.5)."""
+    monkeypatch.setenv("PIXREVIVE_DENOISE_FLOOR_GATE", "0")
+    from ai.pipeline.restoration_pipeline import RestorationPipeline
+    pipe = RestorationPipeline(device="cuda")
+    cam = cv2.cvtColor(skimage.data.camera(), cv2.COLOR_GRAY2RGB)
+    qa = QualityAnalyzer()
+    meta = qa.analyze(cam)
+    ctx = PipelineContext(cam.copy(), meta)
+
+    pipe._stage_5_spatially_gated_denoise(ctx, [], None)
+    logs = [l for l in ctx.processing_log if "h_face=" in l]
+    assert logs, "Stage 5 log missing"
+    import re
+    h_bg = float(re.search(r"h_bg=([\d.]+)", logs[-1]).group(1))
+    assert h_bg >= 6.5, f"Legacy mode should clamp h_bg >= 6.5, got {h_bg}"
