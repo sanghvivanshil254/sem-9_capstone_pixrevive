@@ -368,6 +368,19 @@ class ImpulseDenoiser:
         if rgb.ndim == 2:
             rgb = rgb[:, :, None]
 
+        _despeckle_guard = os.environ.get(
+            "PIXREVIVE_DESPECKLE_GUARD", "1"
+        ).strip().lower() not in ("0", "false", "no", "off")
+
+        is_scene_edge = None
+        if _despeckle_guard:
+            gray_m = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY) if rgb.ndim == 3 and rgb.shape[2] == 3 else rgb.squeeze()
+            macro = cv2.GaussianBlur(gray_m, (15, 15), 0)
+            gx_m = cv2.Sobel(macro, cv2.CV_32F, 1, 0)
+            gy_m = cv2.Sobel(macro, cv2.CV_32F, 0, 1)
+            macro_edge = np.sqrt(gx_m**2 + gy_m**2)
+            is_scene_edge = macro_edge > 25.0
+
         flags = np.zeros(rgb.shape, dtype=bool)
         sigmas: list[float] = []
         thresholds: list[float] = []
@@ -390,10 +403,23 @@ class ImpulseDenoiser:
             # Test 3 — withdraw the flag at the endpoints of thin structures.
             continues = _continues_into_structure(plane, delta_t)
 
-            flags[:, :, c] = extreme & isolated & ~continues
+            flag_c = extreme & isolated & ~continues
+            flags[:, :, c] = flag_c
             sigmas.append(sigma)
             thresholds.append(delta_t)
-            per_channel.append(float(np.mean(flags[:, :, c])))
+
+        # Whole-field macroscopic edge co-location check (analogous to SpeckSuppressor)
+        if _despeckle_guard and is_scene_edge is not None:
+            any_flags = np.any(flags, axis=2)
+            cand_count = int(np.sum(any_flags))
+            if cand_count > 0:
+                edge_coloc = float(np.sum(any_flags & is_scene_edge) / cand_count)
+                if edge_coloc > 0.55:
+                    flags[:] = False
+                else:
+                    flags &= ~is_scene_edge[:, :, None]
+
+        per_channel = [float(np.mean(flags[:, :, c])) for c in range(rgb.shape[2])]
 
         field = ImpulseField(
             density=float(np.mean(np.any(flags, axis=2))),
@@ -482,6 +508,27 @@ class ImpulseDenoiser:
             context.image_metadata["blob_inpaint"] = {
                 "ran": True, "removed_blobs": 0, "coverage_pct": 0.0}
             return False
+
+        _despeckle_guard = os.environ.get(
+            "PIXREVIVE_DESPECKLE_GUARD", "1"
+        ).strip().lower() not in ("0", "false", "no", "off")
+        if _despeckle_guard:
+            macro = cv2.GaussianBlur(gray, (15, 15), 0)
+            gx_m = cv2.Sobel(macro, cv2.CV_32F, 1, 0)
+            gy_m = cv2.Sobel(macro, cv2.CV_32F, 0, 1)
+            macro_edge = np.sqrt(gx_m**2 + gy_m**2)
+            cand_count = int(np.sum(cand > 0))
+            if cand_count > 0:
+                edge_coloc = float(np.sum((cand > 0) & (macro_edge > 25.0)) / cand_count)
+                if edge_coloc > 0.55:
+                    context.add_log(
+                        f"BlobInpaint: rejected macroscopic scene edges "
+                        f"(edge_colocation={edge_coloc:.1%} > 55.0%) — preserving natural scene structures."
+                    )
+                    context.image_metadata["blob_inpaint"] = {
+                        "ran": True, "removed_blobs": 0, "coverage_pct": 0.0, "reason": "rejected_scene_edges"
+                    }
+                    return False
 
         num, lbl, stats, _ = cv2.connectedComponentsWithStats(cand, connectivity=8)
         blob_max = max(_BLOB_MIN_AREA + 1,

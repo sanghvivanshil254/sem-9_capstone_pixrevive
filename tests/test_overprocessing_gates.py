@@ -268,8 +268,12 @@ def test_projector_grade_flag_zero_skips(monkeypatch):
 
 def test_projector_grade_pipeline_flag_skips():
     """When context.pipeline_flags['enable_projector_grade']=False, Stage 10b is bypassed."""
-    from ai.pipeline.restoration_pipeline import RestorationPipeline
-    pipe = RestorationPipeline(device="cuda")
+    from ai.pipeline.stages.finish_stages import FinishStagesMixin
+
+    class DummyFinishPipeline(FinishStagesMixin):
+        pass
+
+    pipe = DummyFinishPipeline()
     cam = cv2.cvtColor(skimage.data.camera(), cv2.COLOR_GRAY2RGB)
     ctx = PipelineContext(cam.copy())
     ctx.pipeline_flags["enable_projector_grade"] = False
@@ -285,8 +289,12 @@ def test_sharpen_gate_skips_on_sharp_image(monkeypatch):
     """PIXREVIVE_SHARPEN_GATE=1 must skip Stage 10 unsharp pass on images with blur_score > 200.0."""
     monkeypatch.setenv("PIXREVIVE_SHARPEN_GATE", "1")
     monkeypatch.setenv("PIXREVIVE_SPECK_SWEEP", "0")
-    from ai.pipeline.restoration_pipeline import RestorationPipeline
-    pipe = RestorationPipeline(device="cuda")
+    from ai.pipeline.stages.finish_stages import FinishStagesMixin
+
+    class DummyFinishPipeline(FinishStagesMixin):
+        pass
+
+    pipe = DummyFinishPipeline()
     cam = cv2.cvtColor(skimage.data.camera(), cv2.COLOR_GRAY2RGB)
     ctx = PipelineContext(cam.copy(), {"blur_score": 450.0, "faces": [{"bbox": [50, 50, 200, 200]}]})
     pre = ctx.working_image.copy()
@@ -301,8 +309,12 @@ def test_sharpen_gate_applies_on_blurry_image(monkeypatch):
     """PIXREVIVE_SHARPEN_GATE=1 must apply Stage 10 sharpening without broadcast crash on blurry portrait."""
     monkeypatch.setenv("PIXREVIVE_SHARPEN_GATE", "1")
     monkeypatch.setenv("PIXREVIVE_SPECK_SWEEP", "0")
-    from ai.pipeline.restoration_pipeline import RestorationPipeline
-    pipe = RestorationPipeline(device="cuda")
+    from ai.pipeline.stages.finish_stages import FinishStagesMixin
+
+    class DummyFinishPipeline(FinishStagesMixin):
+        pass
+
+    pipe = DummyFinishPipeline()
     # Synthetic blurry portrait
     img = np.zeros((300, 400, 3), dtype=np.uint8)
     cv2.circle(img, (200, 150), 60, (200, 200, 200), -1)
@@ -319,8 +331,12 @@ def test_sharpen_gate_flag_zero_restores_legacy(monkeypatch):
     """PIXREVIVE_SHARPEN_GATE=0 must apply Stage 10 sharpening even when blur_score > 200.0."""
     monkeypatch.setenv("PIXREVIVE_SHARPEN_GATE", "0")
     monkeypatch.setenv("PIXREVIVE_SPECK_SWEEP", "0")
-    from ai.pipeline.restoration_pipeline import RestorationPipeline
-    pipe = RestorationPipeline(device="cuda")
+    from ai.pipeline.stages.finish_stages import FinishStagesMixin
+
+    class DummyFinishPipeline(FinishStagesMixin):
+        pass
+
+    pipe = DummyFinishPipeline()
     cam = cv2.cvtColor(skimage.data.camera(), cv2.COLOR_GRAY2RGB)
     ctx = PipelineContext(cam.copy(), {"blur_score": 450.0, "faces": []})
     pre = ctx.working_image.copy()
@@ -329,5 +345,77 @@ def test_sharpen_gate_flag_zero_restores_legacy(monkeypatch):
     assert any("Edge-directed multi-scale crispness applied" in l for l in ctx.processing_log), "Legacy sharpen should run"
     assert ctx.image_metadata.get("stage_10_sharpen_applied", False), "stage_10_sharpen_applied should be True"
     assert not np.array_equal(pre, ctx.working_image), "Legacy sharpen should modify canvas"
+
+
+def test_despeckle_guard_preserves_high_contrast_texture(monkeypatch):
+    """PIXREVIVE_DESPECKLE_GUARD=1 must protect macroscopic scene edges from false impulse/blob suppression."""
+    monkeypatch.setenv("PIXREVIVE_DESPECKLE_GUARD", "1")
+    from ai.pipeline.pipeline_context import PipelineContext
+    from ai.pipeline.stages.preprocess_stages import PreprocessStagesMixin
+
+    class DummyPipeline(PreprocessStagesMixin):
+        pass
+
+    path = "tests/restoration_dataset/pristine/high_contrast_texture.png"
+    if not os.path.exists(path):
+        pytest.skip(f"Fixture {path} not found")
+
+    img = cv2.cvtColor(cv2.imread(path), cv2.COLOR_BGR2RGB)
+    ctx = PipelineContext(img.copy())
+    pipe = DummyPipeline()
+    pipe._stage_0_despeckle(ctx, None)
+
+    diff = np.abs(ctx.working_image.astype(float) - img.astype(float))
+    assert np.count_nonzero(diff) == 0, f"Expected 0 pixels changed, got {np.count_nonzero(diff)}"
+    assert np.array_equal(ctx.working_image, img), "Canvas should be bit-identical"
+    assert not ctx.image_metadata.get("specks_suppressed", False)
+
+
+def test_despeckle_guard_flag_zero_restores_legacy(monkeypatch):
+    """PIXREVIVE_DESPECKLE_GUARD=0 must restore legacy behavior on high contrast textures."""
+    monkeypatch.setenv("PIXREVIVE_DESPECKLE_GUARD", "0")
+    from ai.pipeline.pipeline_context import PipelineContext
+    from ai.pipeline.stages.preprocess_stages import PreprocessStagesMixin
+
+    class DummyPipeline(PreprocessStagesMixin):
+        pass
+
+    path = "tests/restoration_dataset/pristine/high_contrast_texture.png"
+    if not os.path.exists(path):
+        pytest.skip(f"Fixture {path} not found")
+
+    img = cv2.cvtColor(cv2.imread(path), cv2.COLOR_BGR2RGB)
+    ctx = PipelineContext(img.copy())
+    pipe = DummyPipeline()
+    pipe._stage_0_despeckle(ctx, None)
+
+    diff = np.abs(ctx.working_image.astype(float) - img.astype(float))
+    assert np.count_nonzero(diff) > 1000, f"Expected legacy modifications (>1000 px), got {np.count_nonzero(diff)}"
+    assert not np.array_equal(ctx.working_image, img)
+    assert ctx.image_metadata.get("specks_suppressed", False)
+
+
+def test_despeckle_guard_allows_real_impulses_on_damaged_fixture(monkeypatch):
+    """PIXREVIVE_DESPECKLE_GUARD=1 must still suppress real impulses on damaged fixtures."""
+    monkeypatch.setenv("PIXREVIVE_DESPECKLE_GUARD", "1")
+    from ai.pipeline.pipeline_context import PipelineContext
+    from ai.pipeline.stages.preprocess_stages import PreprocessStagesMixin
+
+    class DummyPipeline(PreprocessStagesMixin):
+        pass
+
+    path = "tests/restoration_dataset/damaged/case11_minor_creases.jpg"
+    if not os.path.exists(path):
+        pytest.skip(f"Fixture {path} not found")
+
+    img = cv2.cvtColor(cv2.imread(path), cv2.COLOR_BGR2RGB)
+    ctx = PipelineContext(img.copy())
+    pipe = DummyPipeline()
+    pipe._stage_0_despeckle(ctx, None)
+
+    diff = np.abs(ctx.working_image.astype(float) - img.astype(float))
+    assert np.count_nonzero(diff) > 1000, "Genuine damage should still be cleaned"
+    assert ctx.image_metadata.get("specks_suppressed", False)
+
 
 
