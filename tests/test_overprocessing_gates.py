@@ -10,6 +10,7 @@ Tests:
 
 import os
 import sys
+import re
 import pytest
 import cv2
 import numpy as np
@@ -722,6 +723,96 @@ def test_texture_recovery_boosts_denoise_protect_map(monkeypatch):
     amp_1 = int(ctx_1.working_image[28, 60, 0]) - 120
     
     assert amp_1 >= amp_0, f"Fix 10 should retain more fiber contrast under denoise: {amp_1} vs {amp_0}"
+
+
+# ---------------------------------------------------------------------------
+# Fix 11: Adaptive NLM Parameter Calibration & Over-Smoothing Prevention Tests
+# ---------------------------------------------------------------------------
+
+def test_adaptive_nlm_default_is_off(monkeypatch):
+    """PIXREVIVE_ADAPTIVE_NLM must default to 0 / False when unset."""
+    monkeypatch.delenv("PIXREVIVE_ADAPTIVE_NLM", raising=False)
+    assert os.environ.get("PIXREVIVE_ADAPTIVE_NLM", "0").strip().lower() not in ("1", "true", "yes", "on")
+
+
+def test_adaptive_nlm_calibrates_and_caps_h_parameters(monkeypatch):
+    """
+    PIXREVIVE_ADAPTIVE_NLM=1 restricts NLM filtering parameters:
+    h <= 1.2 * sigma_noise, h_face <= 6.5, h_mid <= 7.5, h_bg <= 8.5 on undamaged images.
+    """
+    from ai.pipeline.pipeline_context import PipelineContext
+    from ai.pipeline.stages.finish_stages import FinishStagesMixin
+
+    class DummyPipeline(FinishStagesMixin):
+        pass
+
+    h, w = 100, 100
+    canvas = np.full((h, w, 3), 128, dtype=np.uint8)
+    pipe = DummyPipeline()
+
+    # Under baseline (flag 0) with sigma=10.0
+    monkeypatch.setenv("PIXREVIVE_ADAPTIVE_NLM", "0")
+    ctx_0 = PipelineContext(canvas.copy(), {"noise_score": 10.0, "content_sigma": 10.0})
+    pipe._stage_5_spatially_gated_denoise(ctx_0, faces=[])
+    log_0 = [l for l in ctx_0.processing_log if "h_face=" in l][-1]
+    m0_face = float(re.search(r"h_face=([\d.]+)", log_0).group(1))
+    m0_mid = float(re.search(r"h_mid=([\d.]+)", log_0).group(1))
+    m0_bg = float(re.search(r"h_bg=([\d.]+)", log_0).group(1))
+
+    # Baseline clamps or expands h_bg >= 11.5, h_mid >= 11.0
+    assert m0_bg >= 11.5, f"Baseline h_bg expected >= 11.5, got {m0_bg}"
+    assert m0_mid >= 11.0, f"Baseline h_mid expected >= 11.0, got {m0_mid}"
+
+    # Under Fix 11 (flag 1) with sigma=10.0
+    monkeypatch.setenv("PIXREVIVE_ADAPTIVE_NLM", "1")
+    ctx_1 = PipelineContext(canvas.copy(), {"noise_score": 10.0, "content_sigma": 10.0})
+    pipe._stage_5_spatially_gated_denoise(ctx_1, faces=[])
+    log_1 = [l for l in ctx_1.processing_log if "h_face=" in l][-1]
+    m1_face = float(re.search(r"h_face=([\d.]+)", log_1).group(1))
+    m1_mid = float(re.search(r"h_mid=([\d.]+)", log_1).group(1))
+    m1_bg = float(re.search(r"h_bg=([\d.]+)", log_1).group(1))
+
+    assert m1_face <= 6.5, f"Fix 11 h_face should be capped at 6.5: got {m1_face}"
+    assert m1_mid <= 7.5, f"Fix 11 h_mid should be capped at 7.5: got {m1_mid}"
+    assert m1_bg <= 8.5, f"Fix 11 h_bg should be capped at 8.5: got {m1_bg}"
+    assert m1_face <= 1.2 * 10.0
+    assert m1_mid <= 1.2 * 10.0
+    assert m1_bg <= 1.2 * 10.0
+
+
+def test_adaptive_nlm_preserves_subtle_grain_and_edges(monkeypatch):
+    """
+    PIXREVIVE_ADAPTIVE_NLM=1 preserves higher residual edge energy and subtle
+    texture variation compared to aggressive baseline smoothing.
+    """
+    from ai.pipeline.pipeline_context import PipelineContext
+    from ai.pipeline.stages.finish_stages import FinishStagesMixin
+
+    class DummyPipeline(FinishStagesMixin):
+        pass
+
+    h, w = 120, 120
+    # Create subtle texture pattern: base 130 with gentle 2-unit variation
+    canvas = np.full((h, w, 3), 130, dtype=np.uint8)
+    for y in range(0, h, 2):
+        for x in range(0, w, 2):
+            canvas[y, x] = [133, 133, 133]
+
+    pipe = DummyPipeline()
+
+    monkeypatch.setenv("PIXREVIVE_ADAPTIVE_NLM", "0")
+    ctx_0 = PipelineContext(canvas.copy(), {"noise_score": 8.0, "content_sigma": 8.0})
+    pipe._stage_5_spatially_gated_denoise(ctx_0, faces=[])
+
+    monkeypatch.setenv("PIXREVIVE_ADAPTIVE_NLM", "1")
+    ctx_1 = PipelineContext(canvas.copy(), {"noise_score": 8.0, "content_sigma": 8.0})
+    pipe._stage_5_spatially_gated_denoise(ctx_1, faces=[])
+
+    var_0 = float(np.var(ctx_0.working_image.astype(np.float32)))
+    var_1 = float(np.var(ctx_1.working_image.astype(np.float32)))
+
+    assert var_1 >= var_0, f"Fix 11 should retain more authentic texture variance than baseline: {var_1} vs {var_0}"
+
 
 
 
