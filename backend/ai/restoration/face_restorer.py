@@ -337,12 +337,25 @@ class FaceRestorer(BaseRestorer):
                     logger.debug("Tonal harmonization exception: %s", _t_err)
 
                 # Guarantee alpha_mask reaches strict 0.0 at the outer crop margins to eliminate any seam ring
-                margin_crop = max(16, int(min(crop_h, crop_w) * 0.06))
-                border_fade = np.ones((crop_h, crop_w), dtype=np.float32)
-                border_fade[:margin_crop, :] = np.linspace(0.0, 1.0, margin_crop)[:, None]
-                border_fade[-margin_crop:, :] = np.linspace(1.0, 0.0, margin_crop)[:, None]
-                border_fade[:, :margin_crop] *= np.linspace(0.0, 1.0, margin_crop)[None, :]
-                border_fade[:, -margin_crop:] *= np.linspace(1.0, 0.0, margin_crop)[None, :]
+                _seamless_face_blend = os.environ.get(
+                    "PIXREVIVE_SEAMLESS_FACE_BLEND", "0"
+                ).strip().lower() in ("1", "true", "yes", "on")
+                if _seamless_face_blend:
+                    margin_crop = max(32, int(min(crop_h, crop_w) * 0.10))
+                    t = np.linspace(0.0, np.pi, margin_crop)
+                    ramp = 0.5 * (1.0 - np.cos(t)).astype(np.float32)
+                    border_fade = np.ones((crop_h, crop_w), dtype=np.float32)
+                    border_fade[:margin_crop, :] = ramp[:, None]
+                    border_fade[-margin_crop:, :] = ramp[::-1][:, None]
+                    border_fade[:, :margin_crop] *= ramp[None, :]
+                    border_fade[:, -margin_crop:] *= ramp[::-1][None, :]
+                else:
+                    margin_crop = max(16, int(min(crop_h, crop_w) * 0.06))
+                    border_fade = np.ones((crop_h, crop_w), dtype=np.float32)
+                    border_fade[:margin_crop, :] = np.linspace(0.0, 1.0, margin_crop)[:, None]
+                    border_fade[-margin_crop:, :] = np.linspace(1.0, 0.0, margin_crop)[:, None]
+                    border_fade[:, :margin_crop] *= np.linspace(0.0, 1.0, margin_crop)[None, :]
+                    border_fade[:, -margin_crop:] *= np.linspace(1.0, 0.0, margin_crop)[None, :]
                 alpha_mask = (
                     alpha_mask * border_fade[:, :, None]
                     if alpha_mask is not None else None
@@ -532,15 +545,26 @@ class FaceRestorer(BaseRestorer):
                                     f"({passes} selective pass(es), final ratio "
                                     f"{internal_ratios[-1]})."
                                 )
-                if seam_ratios and max(seam_ratios) > 3.0:
-                    worst_idx = int(np.argmax(seam_ratios))
-                    pasted_bgr = feather_seam(pasted_bgr, footprints[worst_idx])
-                    feathered_any = True
-                    if context:
-                        context.add_log(
-                            f"[WARN] PasteGuard: footprint-edge seam ratio {max(seam_ratios):.1f} on face "
-                            f"{worst_idx} exceeded 3.0 — ring feathered."
-                        )
+                if _seamless_face_blend:
+                    for fi, fp in enumerate(footprints):
+                        if fi < len(seam_ratios) and seam_ratios[fi] > 1.8:
+                            pasted_bgr = feather_seam(pasted_bgr, fp, band_px=16, blur_k=25, strength=0.65)
+                            feathered_any = True
+                            if context:
+                                context.add_log(
+                                    f"[WARN] PasteGuard: footprint-edge seam ratio {seam_ratios[fi]:.1f} on face {fi} "
+                                    "exceeded 1.8 — seamless ring feathered."
+                                )
+                else:
+                    if seam_ratios and max(seam_ratios) > 3.0:
+                        worst_idx = int(np.argmax(seam_ratios))
+                        pasted_bgr = feather_seam(pasted_bgr, footprints[worst_idx])
+                        feathered_any = True
+                        if context:
+                            context.add_log(
+                                f"[WARN] PasteGuard: footprint-edge seam ratio {max(seam_ratios):.1f} on face "
+                                f"{worst_idx} exceeded 3.0 — ring feathered."
+                            )
                 if context is not None and (seam_ratios or internal_ratios):
                     pg = context.image_metadata.setdefault("paste_guard", {})
                     if isinstance(pg, dict):

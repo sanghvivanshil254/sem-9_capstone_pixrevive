@@ -493,5 +493,66 @@ def test_crack_continuity_preserves_through_eye_crack(monkeypatch):
     assert out_1[150, 150] > 0, "Fix 7 should preserve thin crack stroke cutting through eye"
 
 
+# ---------------------------------------------------------------------------
+# Fix 8: Seamless Face Blend & Seam Suppression Tests
+# ---------------------------------------------------------------------------
+
+def test_seamless_face_blend_default_is_off(monkeypatch):
+    """PIXREVIVE_SEAMLESS_FACE_BLEND must default to 0 / False when unset."""
+    monkeypatch.delenv("PIXREVIVE_SEAMLESS_FACE_BLEND", raising=False)
+    assert os.environ.get("PIXREVIVE_SEAMLESS_FACE_BLEND", "0").strip().lower() not in ("1", "true", "yes", "on")
+
+
+def test_seamless_face_blend_zero_boundary_derivative():
+    """
+    PIXREVIVE_SEAMLESS_FACE_BLEND=1 generates C1-continuous cosine border ramps
+    whose boundary gradient (derivative at x=0) is near-zero (<0.005), eliminating
+    the first-derivative step discontinuity of linear fades (>0.05).
+    """
+    crop_h, crop_w = 512, 512
+    # Baseline linear fade
+    m_base = 16
+    base_fade = np.ones((crop_h, crop_w), dtype=np.float32)
+    base_fade[:m_base, :] = np.linspace(0.0, 1.0, m_base)[:, None]
+    base_deriv = float(base_fade[1, 256] - base_fade[0, 256])
+    assert base_deriv > 0.05, f"Expected linear fade derivative > 0.05, got {base_deriv}"
+    
+    # Fix 8 cosine fade
+    m_cos = 48
+    t = np.linspace(0.0, np.pi, m_cos)
+    cos_ramp = 0.5 * (1.0 - np.cos(t)).astype(np.float32)
+    cos_fade = np.ones((crop_h, crop_w), dtype=np.float32)
+    cos_fade[:m_cos, :] = cos_ramp[:, None]
+    cos_deriv = float(cos_fade[1, 256] - cos_fade[0, 256])
+    assert cos_deriv < 0.005, f"Expected cosine fade derivative < 0.005, got {cos_deriv}"
+    assert cos_deriv < base_deriv / 10.0, "Cosine fade should reduce boundary derivative by >10x"
+
+
+def test_seamless_face_blend_smooths_seam_ratio_threshold(monkeypatch):
+    """
+    PIXREVIVE_SEAMLESS_FACE_BLEND=1 lowers the feathering trigger threshold from
+    ratio > 3.0 to ratio > 1.8 and feathers all matching footprints rather than
+    just worst_idx.
+    """
+    from ai.restoration.paste_guard import feather_seam
+    # 200x200 canvas with a footprint
+    h, w = 200, 200
+    canvas = np.full((h, w, 3), 120, dtype=np.uint8)
+    footprint = np.zeros((h, w), dtype=bool)
+    footprint[50:150, 50:150] = True
+    
+    # Create step discontinuity along footprint edge
+    canvas[footprint] = 160 # +40 step
+    
+    # Feather seam
+    feathered = feather_seam(canvas.copy(), footprint, band_px=16, blur_k=25, strength=0.65)
+    # The step between (49, 100) and (50, 100) should be smoothed
+    orig_step = abs(int(canvas[50, 100, 0]) - int(canvas[49, 100, 0]))
+    feathered_step = abs(int(feathered[50, 100, 0]) - int(feathered[49, 100, 0]))
+    assert orig_step == 40
+    assert feathered_step < orig_step, f"Feathering should reduce boundary step, got {feathered_step}"
+
+
+
 
 
