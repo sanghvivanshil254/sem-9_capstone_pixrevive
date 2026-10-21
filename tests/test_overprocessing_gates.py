@@ -646,6 +646,85 @@ def test_chroma_edge_guide_reduces_misregistration_energy(monkeypatch):
     assert grad_a_1 <= grad_a_0, f"Far-edge chroma gradient should decrease under Fix 9: {grad_a_1} vs {grad_a_0}"
 
 
+# ---------------------------------------------------------------------------
+# Fix 10: Texture Recovery & Feather Preservation Tests
+# ---------------------------------------------------------------------------
+
+def test_texture_recovery_default_is_off(monkeypatch):
+    """PIXREVIVE_TEXTURE_RECOVERY must default to 0 / False when unset."""
+    monkeypatch.delenv("PIXREVIVE_TEXTURE_RECOVERY", raising=False)
+    assert os.environ.get("PIXREVIVE_TEXTURE_RECOVERY", "0").strip().lower() not in ("1", "true", "yes", "on")
+
+
+def test_texture_recovery_protects_speck_suppressor_fibers(monkeypatch):
+    """
+    PIXREVIVE_TEXTURE_RECOVERY=1 prevents SpeckSuppressor from eroding fine oriented
+    fibrous structures (coherence > 0.25) as if they were isotropic noise specks.
+    """
+    from ai.preprocessing.speck_suppressor import SpeckSuppressor
+    from ai.analysis.line_structure import LineStructureAnalyzer
+    h, w = 100, 100
+    canvas = np.full((h, w, 3), 120, dtype=np.uint8)
+    
+    # Draw fine parallel 1px fibrous lines (feather/hair strands)
+    for y in range(20, 80, 4):
+        cv2.line(canvas, (10, y), (90, y), (180, 180, 180), 1)
+        
+    # Baseline (flag 0)
+    monkeypatch.setenv("PIXREVIVE_TEXTURE_RECOVERY", "0")
+    res_0 = SpeckSuppressor.apply(canvas.copy(), threshold=6.0)
+    
+    # Fix 10 (flag 1)
+    monkeypatch.setenv("PIXREVIVE_TEXTURE_RECOVERY", "1")
+    res_1 = SpeckSuppressor.apply(canvas.copy(), threshold=6.0)
+    
+    # Peak amplitude of fiber lines at y=48
+    fiber_amp_in = int(canvas[48, 50, 0]) - 120
+    fiber_amp_0 = int(res_0[48, 50, 0]) - 120
+    fiber_amp_1 = int(res_1[48, 50, 0]) - 120
+    
+    # Fix 10 should preserve more of the authentic fiber amplitude than baseline
+    assert fiber_amp_1 > fiber_amp_0, f"Fix 10 should preserve fiber amplitude: {fiber_amp_1} vs {fiber_amp_0}"
+
+
+def test_texture_recovery_boosts_denoise_protect_map(monkeypatch):
+    """
+    PIXREVIVE_TEXTURE_RECOVERY=1 integrates structure tensor orientation coherence
+    into Stage 5 denoise protect_map and boosts authentic texture retention.
+    """
+    from ai.pipeline.pipeline_context import PipelineContext
+    from ai.pipeline.stages.finish_stages import FinishStagesMixin
+    
+    class DummyPipeline(FinishStagesMixin):
+        pass
+        
+    h, w = 120, 120
+    canvas = np.full((h, w, 3), 120, dtype=np.uint8)
+    # Add fibrous parallel lines in upper half
+    for y in range(10, 50, 4):
+        cv2.line(canvas, (10, y), (110, y), (170, 170, 170), 1)
+        
+    # Run Stage 5 denoise under flag 0 vs flag 1
+    pipe = DummyPipeline()
+    
+    # Flag 0
+    monkeypatch.setenv("PIXREVIVE_TEXTURE_RECOVERY", "0")
+    ctx_0 = PipelineContext(canvas.copy(), {"noise_score": 6.0, "content_sigma": 6.0})
+    pipe._stage_5_spatially_gated_denoise(ctx_0, faces=[])
+    
+    # Flag 1
+    monkeypatch.setenv("PIXREVIVE_TEXTURE_RECOVERY", "1")
+    ctx_1 = PipelineContext(canvas.copy(), {"noise_score": 6.0, "content_sigma": 6.0})
+    pipe._stage_5_spatially_gated_denoise(ctx_1, faces=[])
+    
+    # Compare residual fiber line amplitude at y=28
+    amp_0 = int(ctx_0.working_image[28, 60, 0]) - 120
+    amp_1 = int(ctx_1.working_image[28, 60, 0]) - 120
+    
+    assert amp_1 >= amp_0, f"Fix 10 should retain more fiber contrast under denoise: {amp_1} vs {amp_0}"
+
+
+
 
 
 

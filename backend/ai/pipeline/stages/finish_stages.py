@@ -537,7 +537,24 @@ class FinishStagesMixin:
                 raw_texture * 0.35,
             ) if _struct_guard else raw_texture * max(0.0, 1.0 - sigma_noise / 15.0)
 
-            protect_map = np.maximum(edge_weight, texture_weight)
+            _tex_rec = os.environ.get("PIXREVIVE_TEXTURE_RECOVERY", "0").strip().lower() in ("1", "true", "yes", "on")
+            if _tex_rec:
+                try:
+                    from ai.analysis.line_structure import LineStructureAnalyzer
+                    _field = LineStructureAnalyzer().compute_tensor_field(l_chan)
+                    _coh = _field.get("coherence")
+                    if _coh is not None:
+                        _coh_weight = np.clip((_coh - 0.20) / 0.25, 0.0, 1.0)
+                        protect_map = np.maximum(np.maximum(edge_weight, texture_weight), _coh_weight)
+                    else:
+                        protect_map = np.maximum(edge_weight, texture_weight)
+                        _coh_weight = None
+                except Exception:
+                    protect_map = np.maximum(edge_weight, texture_weight)
+                    _coh_weight = None
+            else:
+                protect_map = np.maximum(edge_weight, texture_weight)
+                _coh_weight = None
 
             l_fused = (
                 l_face.astype(np.float32) * mask_face +
@@ -552,6 +569,10 @@ class FinishStagesMixin:
             else:
                 l_edge_ref = l_chan.astype(np.float32)
                 max_protect = 0.50
+
+            if _tex_rec and _coh_weight is not None:
+                l_edge_ref = l_edge_ref * (1.0 - _coh_weight) + l_chan.astype(np.float32) * _coh_weight
+                max_protect = max_protect * (1.0 - _coh_weight) + 0.75 * _coh_weight
 
             l_fused = l_fused * (1.0 - max_protect * protect_map) + l_edge_ref * (max_protect * protect_map)
             l_fused_uint8 = np.clip(l_fused, 0, 255).astype(np.uint8)
