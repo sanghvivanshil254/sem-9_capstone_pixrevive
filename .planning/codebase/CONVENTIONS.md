@@ -62,5 +62,4 @@ and *discloses*:
 
 - `test_artifacts/` and `backend/temp_results/` are gitignored working areas; docs live
   in `docs/`; the GSD map in `.planning/codebase/` is committed.
-- Commit style: imperative subject naming the phase + intent; footer
-  `🤖 Generated with Codebuff / Co-Authored-By: Codebuff`.
+- Git commit style: imperative subject naming the phase and intent.
