@@ -190,12 +190,28 @@ class EdgeAwareColorBleedFixer:
         
         # 1. Detect luminance edges — these are the boundaries where
         #    color should NOT bleed across
-        edges = cv2.Canny(np.clip(L, 0, 255).astype(np.uint8), 30, 80)
-        
-        # Dilate edges to create a "boundary zone" where we clamp chrominance
-        edge_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        edge_zone = cv2.dilate(edges, edge_kernel, iterations=1)
-        edge_mask = edge_zone > 0
+        _edge_guide = os.environ.get("PIXREVIVE_CHROMA_EDGE_GUIDE", "0").strip().lower() in ("1", "true", "yes", "on")
+        if _edge_guide:
+            gx_L = cv2.Sobel(L, cv2.CV_32F, 1, 0, ksize=3)
+            gy_L = cv2.Sobel(L, cv2.CV_32F, 0, 1, ksize=3)
+            grad_L = np.sqrt(gx_L**2 + gy_L**2)
+            edge_zone = (grad_L > 25.0).astype(np.uint8) * 255
+            # Dilate to cover the full bleed transition band
+            edge_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+            edge_zone = cv2.dilate(edge_zone, edge_kernel, iterations=1)
+            edge_mask = edge_zone > 0
+            d = max(15, min(25, int(min(h, w) * 0.04) | 1))
+            sigma_color = 8.0   # Tight range kernel: stop cross-edge bleed
+            sigma_space = max(8.0, min(h, w) * 0.015)
+        else:
+            edges = cv2.Canny(np.clip(L, 0, 255).astype(np.uint8), 30, 80)
+            # Dilate edges to create a "boundary zone" where we clamp chrominance
+            edge_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            edge_zone = cv2.dilate(edges, edge_kernel, iterations=1)
+            edge_mask = edge_zone > 0
+            d = max(7, min(15, int(min(h, w) * 0.01) | 1))
+            sigma_color = 20.0   # Tight: only mix chrominance between luminance-similar pixels
+            sigma_space = max(7.0, min(h, w) * 0.005)
         
         if not np.any(edge_mask):
             return img
@@ -203,14 +219,6 @@ class EdgeAwareColorBleedFixer:
         # 2. For each edge pixel, compute the chrominance of each side
         #    and clamp edge pixels to match the side they're on based on
         #    luminance similarity.
-        
-        # Use a large guided bilateral filter: sigma_color is LOW (tight
-        # in luminance space) and sigma_space is moderate. This smooths
-        # chrominance only among pixels with similar luminance.
-        # Adaptive kernel size based on image resolution
-        d = max(7, min(15, int(min(h, w) * 0.01) | 1))
-        sigma_color = 20.0   # Tight: only mix chrominance between luminance-similar pixels
-        sigma_space = max(7.0, min(h, w) * 0.005)
         
         # Joint bilateral filter: filter A and B using L as the guide
         L_u8 = np.clip(L, 0, 255).astype(np.uint8)
@@ -227,6 +235,9 @@ class EdgeAwareColorBleedFixer:
             B_filtered = cv2.ximgproc.jointBilateralFilter(
                 L_u8, B_u8, d=d, sigmaColor=sigma_color, sigmaSpace=sigma_space
             ).astype(np.float32)
+            if _edge_guide:
+                A_filtered = cv2.ximgproc.guidedFilter(guide=L_u8, src=A_filtered, radius=6, eps=16.0).astype(np.float32)
+                B_filtered = cv2.ximgproc.guidedFilter(guide=L_u8, src=B_filtered, radius=6, eps=16.0).astype(np.float32)
         else:
             A_filtered = cv2.bilateralFilter(A_u8, d=d, sigmaColor=sigma_color, sigmaSpace=sigma_space).astype(np.float32)
             B_filtered = cv2.bilateralFilter(B_u8, d=d, sigmaColor=sigma_color, sigmaSpace=sigma_space).astype(np.float32)
@@ -242,7 +253,7 @@ class EdgeAwareColorBleedFixer:
         
         # In edge zones: stronger correction (pull color to luminance-guided value)
         # Outside edge zones: gentle correction (prevent large-scale color drift)
-        edge_strength = strength
+        edge_strength = 1.0 if _edge_guide else strength
         # Fix 4: Reduced non-edge strength 0.2x → 0.08x to prevent global chroma drift.
         non_edge_strength = strength * 0.08
         
@@ -583,11 +594,11 @@ class ColorArtifactReducer:
         if os.environ.get("PIXREVIVE_CHROMA_DISCIPLINE", "1").strip().lower() not in ("0", "false", "no", "off"):
             try:
                 lab_g = cv2.cvtColor(result, cv2.COLOR_RGB2LAB).astype(np.float32)
-                l_g = lab_g[:, :, 0].astype(np.uint8)
+                _guide_eps = 25.0 if os.environ.get("PIXREVIVE_CHROMA_EDGE_GUIDE", "0").strip().lower() in ("1", "true", "yes", "on") else 600.0
                 a_f = cv2.ximgproc.guidedFilter(
-                    guide=l_g, src=lab_g[:, :, 1].astype(np.float32), radius=8, eps=600.0)
+                    guide=l_g, src=lab_g[:, :, 1].astype(np.float32), radius=8, eps=_guide_eps)
                 b_f = cv2.ximgproc.guidedFilter(
-                    guide=l_g, src=lab_g[:, :, 2].astype(np.float32), radius=8, eps=600.0)
+                    guide=l_g, src=lab_g[:, :, 2].astype(np.float32), radius=8, eps=_guide_eps)
                 # Blend 60% of the guided (edge-aligned) chroma back.
                 lab_g[:, :, 1] = np.clip(0.4 * lab_g[:, :, 1] + 0.6 * a_f, 0, 255)
                 lab_g[:, :, 2] = np.clip(0.4 * lab_g[:, :, 2] + 0.6 * b_f, 0, 255)

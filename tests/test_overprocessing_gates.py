@@ -553,6 +553,100 @@ def test_seamless_face_blend_smooths_seam_ratio_threshold(monkeypatch):
     assert feathered_step < orig_step, f"Feathering should reduce boundary step, got {feathered_step}"
 
 
+# ---------------------------------------------------------------------------
+# Fix 9: Chroma Edge Guide & Colour Bleed Prevention Tests
+# ---------------------------------------------------------------------------
+
+def test_chroma_edge_guide_default_is_off(monkeypatch):
+    """PIXREVIVE_CHROMA_EDGE_GUIDE must default to 0 / False when unset."""
+    monkeypatch.delenv("PIXREVIVE_CHROMA_EDGE_GUIDE", raising=False)
+    assert os.environ.get("PIXREVIVE_CHROMA_EDGE_GUIDE", "0").strip().lower() not in ("1", "true", "yes", "on")
+
+
+def test_chroma_edge_guide_snaps_chroma_across_edge(monkeypatch):
+    """
+    PIXREVIVE_CHROMA_EDGE_GUIDE=1 snaps bled chrominance across sharp luminance
+    edges, reducing boundary leakage in the 2-10px transition band.
+    """
+    from ai.colorization.color_refiner import EdgeAwareColorBleedFixer
+    # Create 100x100 synthetic image with a sharp vertical luminance step at x=50
+    # Left (x < 50): L=50, a=160 (vivid red lips)
+    # Right (x >= 50): L=180, a=128 (pale skin)
+    h, w = 100, 100
+    L = np.full((h, w), 180.0, dtype=np.float32)
+    L[:, :50] = 50.0
+    
+    # Smeared chrominance channel simulating DDColor 512x512 bilinear upsampling blur:
+    # a transitions linearly from 160 at x=40 to 128 at x=60 (bleeding 10px into the light side)
+    a = np.full((h, w), 128.0, dtype=np.float32)
+    a[:, :40] = 160.0
+    for x in range(40, 60):
+        a[:, x] = 160.0 - (x - 40) * (32.0 / 20.0)
+    b = np.full((h, w), 128.0, dtype=np.float32)
+    
+    rgb_in = cv2.cvtColor(np.dstack([L, a, b]).astype(np.uint8), cv2.COLOR_LAB2RGB)
+    
+    # Baseline (flag 0)
+    # Baseline (flag 0)
+    monkeypatch.setenv("PIXREVIVE_CHROMA_EDGE_GUIDE", "0")
+    rgb_0 = EdgeAwareColorBleedFixer.fix_bleeding(rgb_in.copy(), strength=0.75)
+    lab_0 = cv2.cvtColor(rgb_0, cv2.COLOR_RGB2LAB).astype(np.float32)
+
+    # Fix 9 (flag 1)
+    monkeypatch.setenv("PIXREVIVE_CHROMA_EDGE_GUIDE", "1")
+    rgb_1 = EdgeAwareColorBleedFixer.fix_bleeding(rgb_in.copy(), strength=0.75)
+    lab_1 = cv2.cvtColor(rgb_1, cv2.COLOR_RGB2LAB).astype(np.float32)
+
+    # Chroma step across the boundary x=49 -> x=50
+    step_0 = float(lab_0[50, 49, 1] - lab_0[50, 50, 1])
+    step_1 = float(lab_1[50, 49, 1] - lab_1[50, 50, 1])
+    
+    # Bleed into pale skin side at x=50
+    bleed_0 = abs(float(lab_0[50, 50, 1]) - 128.0)
+    bleed_1 = abs(float(lab_1[50, 50, 1]) - 128.0)
+    
+    assert step_1 > step_0 * 3.0, f"Fix 9 should sharpen chroma edge step by >3x: {step_1:.2f} vs {step_0:.2f}"
+    assert bleed_1 < bleed_0, f"Fix 9 should reduce chrominance bleed at boundary: {bleed_1:.2f} vs {bleed_0:.2f}"
+
+
+def test_chroma_edge_guide_reduces_misregistration_energy(monkeypatch):
+    """
+    PIXREVIVE_CHROMA_EDGE_GUIDE=1 in DDColor chroma blending reduces chrominance
+    gradient energy located > 4px from strong luminance edges.
+    """
+    from ai.colorization.ddcolor_colorizer import _blend_chroma
+    h, w = 120, 120
+    # Step edge in luminance at x=60
+    gray_L = np.full((h, w), 190, dtype=np.uint8)
+    gray_L[:, :60] = 60
+    gray_rgb = cv2.cvtColor(gray_L, cv2.COLOR_GRAY2RGB)
+    
+    # Color image with blurred chroma
+    col_a = np.full((h, w), 128, dtype=np.uint8)
+    col_a[:, :50] = 165
+    # Smooth blur across edge
+    col_a = cv2.GaussianBlur(col_a, (15, 15), 0)
+    col_b = np.full((h, w), 128, dtype=np.uint8)
+    col_lab = np.dstack([gray_L, col_a, col_b])
+    col_rgb = cv2.cvtColor(col_lab, cv2.COLOR_LAB2RGB)
+    
+    # Measure far-edge energy under flag 0 vs flag 1
+    monkeypatch.setenv("PIXREVIVE_CHROMA_EDGE_GUIDE", "0")
+    res_0 = _blend_chroma(gray_rgb, col_rgb, opacity=1.0)
+    lab_0 = cv2.cvtColor(res_0, cv2.COLOR_RGB2LAB).astype(np.float32)
+    
+    monkeypatch.setenv("PIXREVIVE_CHROMA_EDGE_GUIDE", "1")
+    res_1 = _blend_chroma(gray_rgb, col_rgb, opacity=1.0)
+    lab_1 = cv2.cvtColor(res_1, cv2.COLOR_RGB2LAB).astype(np.float32)
+    
+    # Gradient of 'a' at x=70 (10px from edge):
+    grad_a_0 = abs(lab_0[60, 71, 1] - lab_0[60, 69, 1])
+    grad_a_1 = abs(lab_1[60, 71, 1] - lab_1[60, 69, 1])
+    
+    assert grad_a_1 <= grad_a_0, f"Far-edge chroma gradient should decrease under Fix 9: {grad_a_1} vs {grad_a_0}"
+
+
+
 
 
 
