@@ -36,6 +36,8 @@ rim. Only L is touched; chroma is carried through untouched.
 
 from __future__ import annotations
 
+import os
+
 import cv2
 import numpy as np
 
@@ -141,6 +143,17 @@ class SpeckSuppressor:
         th = _tophat(L)
         # Ramp 0 -> 1 across [threshold, 2 * threshold] so the correction eases in
         gain = np.clip((th - threshold) / max(threshold, 1e-6), 0.0, 1.0)
+        _tex_rec = os.environ.get("PIXREVIVE_TEXTURE_RECOVERY", "0").strip().lower() in ("1", "true", "yes", "on")
+        if _tex_rec:
+            try:
+                from ai.analysis.line_structure import LineStructureAnalyzer
+                _field = LineStructureAnalyzer().compute_tensor_field(L.astype(np.uint8))
+                _coh = _field.get("coherence")
+                if _coh is not None:
+                    _tex_prot = np.clip((_coh - 0.20) / 0.15, 0.0, 1.0)
+                    gain = gain * (1.0 - 0.75 * _tex_prot)
+            except Exception:
+                pass
         lab[:, :, 0] = np.clip(L - th * gain * strength, 0.0, 255.0)
         return cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
 

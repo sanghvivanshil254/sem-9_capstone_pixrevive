@@ -134,14 +134,30 @@ def _blend_chroma(gray_rgb: np.ndarray, color_rgb: np.ndarray, opacity: float = 
     b_ch = np.clip(color_lab[:, :, 2], 0, 255).astype(np.uint8)
 
     # 1. Structure-guided edge-constrained bilateral filter
-    # d=3 / sigmaSpace=3 is enough to suppress single-pixel chroma noise
-    # without blurring skin texture or hair detail (was d=5/sigmaSpace=6).
-    if hasattr(cv2, "ximgproc") and hasattr(cv2.ximgproc, "jointBilateralFilter"):
-        a_smooth = cv2.ximgproc.jointBilateralFilter(luma_uint8, a_ch, d=3, sigmaColor=9.0, sigmaSpace=3.0).astype(np.float32)
-        b_smooth = cv2.ximgproc.jointBilateralFilter(luma_uint8, b_ch, d=3, sigmaColor=9.0, sigmaSpace=3.0).astype(np.float32)
+    _edge_guide = os.environ.get("PIXREVIVE_CHROMA_EDGE_GUIDE", "0").strip().lower() in ("1", "true", "yes", "on")
+    if _edge_guide:
+        # Scale kernel to cover the DDColor 512x512 upsampling transition band
+        # and enforce tight range gating (sigma_color=8.0) so chroma does not cross sharp L edges
+        d_k = max(7, min(13, int(round(min(h, w) * 0.015)) | 1))
+        ss_k = max(4.0, min(8.0, float(min(h, w) * 0.008)))
+        if hasattr(cv2, "ximgproc") and hasattr(cv2.ximgproc, "jointBilateralFilter"):
+            a_smooth = cv2.ximgproc.jointBilateralFilter(luma_uint8, a_ch, d=d_k, sigmaColor=8.0, sigmaSpace=ss_k).astype(np.float32)
+            b_smooth = cv2.ximgproc.jointBilateralFilter(luma_uint8, b_ch, d=d_k, sigmaColor=8.0, sigmaSpace=ss_k).astype(np.float32)
+            # Edge-guided chroma snapping along sharp luminance edges
+            a_smooth = cv2.ximgproc.guidedFilter(guide=luma_uint8, src=a_smooth, radius=4, eps=16.0).astype(np.float32)
+            b_smooth = cv2.ximgproc.guidedFilter(guide=luma_uint8, src=b_smooth, radius=4, eps=16.0).astype(np.float32)
+        else:
+            a_smooth = cv2.bilateralFilter(a_ch, d=d_k, sigmaColor=8.0, sigmaSpace=ss_k).astype(np.float32)
+            b_smooth = cv2.bilateralFilter(b_ch, d=d_k, sigmaColor=8.0, sigmaSpace=ss_k).astype(np.float32)
     else:
-        a_smooth = cv2.bilateralFilter(a_ch, d=3, sigmaColor=9.0, sigmaSpace=3.0).astype(np.float32)
-        b_smooth = cv2.bilateralFilter(b_ch, d=3, sigmaColor=9.0, sigmaSpace=3.0).astype(np.float32)
+        # Baseline d=3 / sigmaSpace=3 is enough to suppress single-pixel chroma noise
+        # without blurring skin texture or hair detail (was d=5/sigmaSpace=6).
+        if hasattr(cv2, "ximgproc") and hasattr(cv2.ximgproc, "jointBilateralFilter"):
+            a_smooth = cv2.ximgproc.jointBilateralFilter(luma_uint8, a_ch, d=3, sigmaColor=9.0, sigmaSpace=3.0).astype(np.float32)
+            b_smooth = cv2.ximgproc.jointBilateralFilter(luma_uint8, b_ch, d=3, sigmaColor=9.0, sigmaSpace=3.0).astype(np.float32)
+        else:
+            a_smooth = cv2.bilateralFilter(a_ch, d=3, sigmaColor=9.0, sigmaSpace=3.0).astype(np.float32)
+            b_smooth = cv2.bilateralFilter(b_ch, d=3, sigmaColor=9.0, sigmaSpace=3.0).astype(np.float32)
 
     # 2. Targeted deep shadow desaturation.
     # Fix 2: Ramp raised from (luma-8)/16 to (luma-18)/12.

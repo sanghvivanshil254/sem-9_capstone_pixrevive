@@ -10,6 +10,7 @@ Key architecture:
     to LaMa, which handles large-mask texture synthesis without blurry PDE smudges.
 """
 
+import math
 import os
 
 import cv2
@@ -125,6 +126,9 @@ class MaskRefiner:
             _min_area = max(400, int(0.003 * refined.size))
             _pruned_px = 0
             _pruned_n = 0
+            _crack_continuity = os.environ.get("PIXREVIVE_CRACK_CONTINUITY", "0").strip().lower() in (
+                "1", "true", "yes", "on"
+            )
             _n_c, _lbl_c, _stats_c, _cent_c = cv2.connectedComponentsWithStats(
                 refined, connectivity=8)
             for _ci in range(1, _n_c):
@@ -133,9 +137,21 @@ class MaskRefiner:
                     continue
                 _w_c = int(_stats_c[_ci, cv2.CC_STAT_WIDTH])
                 _h_c = int(_stats_c[_ci, cv2.CC_STAT_HEIGHT])
-                if max(_w_c, _h_c) / max(1, min(_w_c, _h_c)) >= 3.0:
-                    continue  # crack/tear signature: shape says damage
                 _comp = _lbl_c == _ci
+                if _crack_continuity:
+                    # Rotation-invariant moment elongation: catches diagonal cracks where axis-aligned bbox is square
+                    _m = cv2.moments(_comp.astype(np.uint8))
+                    _mu20, _mu02, _mu11 = _m["mu20"], _m["mu02"], _m["mu11"]
+                    _diff = _mu20 - _mu02
+                    _root = math.sqrt(_diff * _diff + 4.0 * _mu11 * _mu11)
+                    _l1 = 0.5 * (_mu20 + _mu02 + _root)
+                    _l2 = 0.5 * (_mu20 + _mu02 - _root)
+                    _moment_aspect = math.sqrt(_l1 / max(_l2, 0.05))
+                    if max(_w_c, _h_c) / max(1, min(_w_c, _h_c)) >= 3.0 or _moment_aspect >= 2.5:
+                        continue  # crack/tear signature: shape says damage
+                else:
+                    if max(_w_c, _h_c) / max(1, min(_w_c, _h_c)) >= 3.0:
+                        continue  # crack/tear signature: shape says damage
                 _ring = cv2.dilate(_comp.astype(np.uint8), _se_ring) > 0
                 _ring &= ~_comp
                 if int(_ring.sum()) < 40:
@@ -188,8 +204,27 @@ class MaskRefiner:
                             r_eye = max(8, int(min(fw, fh) * 0.08))
                             eye_sub = face_sub[max(0, ey - r_eye):min(fh, ey + r_eye), max(0, ex - r_eye):min(fw, ex + r_eye)]
                             if np.sum(eye_sub > 0) > (r_eye * 2):
-                                cv2.circle(face_sub, (ex, ey), r_eye, 0, -1)
-                                protected += int(np.sum(eye_sub > 0))
+                                if _crack_continuity:
+                                    # Protect eye socket from broad fills, but preserve thin linear crack strokes cutting through the eye
+                                    _eye_disk = np.zeros_like(face_sub)
+                                    cv2.circle(_eye_disk, (ex, ey), r_eye, 255, -1)
+                                    _eye_damage = (_eye_disk > 0) & (face_sub > 0)
+                                    _eye_disk_area = math.pi * r_eye * r_eye
+                                    if np.any(_eye_damage):
+                                        _ne, _lble, _ste, _ = cv2.connectedComponentsWithStats(_eye_damage.astype(np.uint8), connectivity=8)
+                                        for _ei in range(1, _ne):
+                                            _ea = int(_ste[_ei, cv2.CC_STAT_AREA])
+                                            _ew = int(_ste[_ei, cv2.CC_STAT_WIDTH])
+                                            _eh = int(_ste[_ei, cv2.CC_STAT_HEIGHT])
+                                            _diag_len = math.hypot(_ew, _eh)
+                                            _estroke = _ea / max(_diag_len, 1.0)
+                                            # If it's a broad blob (not a thin stroke) or covers a major portion of the eye socket, protect it
+                                            if _estroke > 10.0 or _ea > (0.45 * _eye_disk_area):
+                                                face_sub[_lble == _ei] = 0
+                                                protected += _ea
+                                else:
+                                    cv2.circle(face_sub, (ex, ey), r_eye, 0, -1)
+                                    protected += int(np.sum(eye_sub > 0))
 
                         # Mouth: protect teeth and open smiles from being obliterated by blobs
                         ml = np.array([landmarks[3][0] - x1f, landmarks[3][1] - y1f], dtype=np.float32)
@@ -229,8 +264,25 @@ class MaskRefiner:
                         for (ex, ey) in ((ex1, ey1), (ex2, ey2)):
                             eye_sub = face_sub[max(0, ey - r_eye):min(fh, ey + r_eye), max(0, ex - r_eye):min(fw, ex + r_eye)]
                             if np.sum(eye_sub > 0) > (r_eye * 2):
-                                cv2.circle(face_sub, (ex, ey), r_eye, 0, -1)
-                                protected += int(np.sum(eye_sub > 0))
+                                if _crack_continuity:
+                                    _eye_disk = np.zeros_like(face_sub)
+                                    cv2.circle(_eye_disk, (ex, ey), r_eye, 255, -1)
+                                    _eye_damage = (_eye_disk > 0) & (face_sub > 0)
+                                    _eye_disk_area = math.pi * r_eye * r_eye
+                                    if np.any(_eye_damage):
+                                        _ne, _lble, _ste, _ = cv2.connectedComponentsWithStats(_eye_damage.astype(np.uint8), connectivity=8)
+                                        for _ei in range(1, _ne):
+                                            _ea = int(_ste[_ei, cv2.CC_STAT_AREA])
+                                            _ew = int(_ste[_ei, cv2.CC_STAT_WIDTH])
+                                            _eh = int(_ste[_ei, cv2.CC_STAT_HEIGHT])
+                                            _diag_len = math.hypot(_ew, _eh)
+                                            _estroke = _ea / max(_diag_len, 1.0)
+                                            if _estroke > 10.0 or _ea > (0.45 * _eye_disk_area):
+                                                face_sub[_lble == _ei] = 0
+                                                protected += _ea
+                                else:
+                                    cv2.circle(face_sub, (ex, ey), r_eye, 0, -1)
+                                    protected += int(np.sum(eye_sub > 0))
 
                         mx, my = int(0.50 * fw), int(0.76 * fh)
                         oral_ellipse = np.zeros((fh, fw), dtype=np.uint8)
@@ -264,19 +316,34 @@ class MaskRefiner:
 
                         # A true crack is thin (stroke <= 5.5px, thickness <= 8px).
                         # Large 2D blobs covering the face have high thickness and must not be treated as linear cracks.
-                        is_linear_crack = (
-                            (len_f >= min_crack_len) and
-                            (aspect_f >= 2.0 or elongation_f >= 2.5) and
-                            (stroke_f <= 5.5 and min_dim <= 8)
-                        )
+                        if _crack_continuity:
+                            _diag_f = math.hypot(cw_f, ch_f)
+                            _stroke_diag = area_f / max(_diag_f, 1.0)
+                            _elong_diag = (_diag_f * _diag_f) / max(1, area_f)
+                            is_linear_crack = (
+                                (_diag_f >= min_crack_len) and
+                                (aspect_f >= 2.0 or _elong_diag >= 2.5) and
+                                (_stroke_diag <= 10.0)
+                            )
+                        else:
+                            is_linear_crack = (
+                                (len_f >= min_crack_len) and
+                                (aspect_f >= 2.0 or elongation_f >= 2.5) and
+                                (stroke_f <= 5.5 and min_dim <= 8)
+                            )
 
                         is_protected_feature = False
                         if has_exact_lms:
                             for lm in landmarks:
                                 lx, ly = lm[0] - x1f, lm[1] - y1f
-                                if np.hypot(cx - lx, cy - ly) < max(10, min(fw, fh) * 0.08):
-                                    is_protected_feature = True
-                                    break
+                                if _crack_continuity:
+                                    if np.hypot(cx - lx, cy - ly) < max(10, min(fw, fh) * 0.08) and not is_linear_crack:
+                                        is_protected_feature = True
+                                        break
+                                else:
+                                    if np.hypot(cx - lx, cy - ly) < max(10, min(fw, fh) * 0.08):
+                                        is_protected_feature = True
+                                        break
                         else:
                             in_left_eye = (0.24 * fh <= cy <= 0.48 * fh) and (0.20 * fw <= cx <= 0.45 * fw)
                             in_right_eye = (0.24 * fh <= cy <= 0.48 * fh) and (0.55 * fw <= cx <= 0.80 * fw)

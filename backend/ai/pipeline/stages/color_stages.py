@@ -311,7 +311,8 @@ class ColorStagesMixin:
                             _snap_radius, _snap_eps = 6, 15.0
                         else:
                             _snap_guide = cv2.GaussianBlur(l_chan, (0, 0), sigmaX=max(2.0, 0.008 * max(l_chan.shape[:2])))
-                            _snap_radius, _snap_eps = 10, 60.0
+                            _snap_radius = 10
+                            _snap_eps = 15.0 if os.environ.get("PIXREVIVE_CHROMA_EDGE_GUIDE", "0").strip().lower() in ("1", "true", "yes", "on") else 60.0
                         try:
                             a_diffused = cv2.ximgproc.guidedFilter(guide=_snap_guide, src=a_diffused, radius=_snap_radius, eps=_snap_eps)
                             b_diffused = cv2.ximgproc.guidedFilter(guide=_snap_guide, src=b_diffused, radius=_snap_radius, eps=_snap_eps)

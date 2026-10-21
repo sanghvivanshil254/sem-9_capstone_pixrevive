@@ -468,46 +468,69 @@ class FinishStagesMixin:
                     context.image_metadata["denoise_applied"] = False
                     return
 
-            if bg_damaged:
-                h_bg = max(11.0, 1.4 * sigma_noise)
+            _adaptive_nlm = os.environ.get("PIXREVIVE_ADAPTIVE_NLM", "0").strip().lower() in ("1", "true", "yes", "on")
+            if _adaptive_nlm:
+                # Fix 11: PIXREVIVE_ADAPTIVE_NLM prevents painterly over-smoothing on flat patches,
+                # skin pores, and clothing weave by strictly calibrating h <= 1.2 * sigma_noise and
+                # enforcing conservative zone ceilings (h_face <= 6.5, h_mid <= 7.5, h_bg <= 8.5).
+                if bg_damaged:
+                    h_bg = min(max(1.2, 1.20 * sigma_noise), _nlm_cap if _nlm_cap > 0 else 12.0)
+                else:
+                    h_bg = min(8.5, max(1.2, 1.05 * sigma_noise))
+                h_mid = min(7.5, max(1.2, 1.00 * sigma_noise))
+                h_face = min(6.5, max(1.2, 0.85 * sigma_noise))
+                if is_small_face and sigma_noise > 4.0:
+                    h_face = min(6.5, max(1.2, 0.95 * sigma_noise))
                 if _nlm_cap > 0:
                     h_bg = min(h_bg, _nlm_cap)
-            elif sigma_noise > 7.0:
-                h_bg = max(11.5, 1.25 * sigma_noise)
-            elif _denoise_gate and noise_score_meta is not None and sigma_noise <= 5.0:
-                # Fix 3: Scale filter parameters down with noise floor instead of hard clamping to 6.5/7.5/5.5
-                h_bg = max(1.2, 0.95 * sigma_noise)
+                    h_mid = min(h_mid, _nlm_cap)
+                    h_face = min(h_face, _nlm_cap)
             else:
-                h_bg = max(6.5, 0.95 * sigma_noise)
-            # G1 note: an h_bg cap here was tried and removed — it broke the
-            # noise-reduction contract on all-noise frames (sigma 15 -> 8.9).
-            # Texture/contour preservation is owned by the coherence-gated
-            # protect map below and the HF re-injection guard, not by
-            # weakening the filter globally. The J-8 cap above targets only
-            # the DAMAGE branch, where σ is polluted by damage energy.
-            if _denoise_gate and noise_score_meta is not None and not bg_damaged and sigma_noise <= 5.0:
-                h_mid = max(1.2, 1.10 * sigma_noise)
-            else:
-                h_mid = max(7.5, 1.10 * sigma_noise)
-                if _nlm_cap > 0 and bg_damaged:
-                    h_mid = min(h_mid, _nlm_cap * 0.85)
+                if bg_damaged:
+                    h_bg = max(11.0, 1.4 * sigma_noise)
+                    if _nlm_cap > 0:
+                        h_bg = min(h_bg, _nlm_cap)
+                elif sigma_noise > 7.0:
+                    h_bg = max(11.5, 1.25 * sigma_noise)
+                elif _denoise_gate and noise_score_meta is not None and sigma_noise <= 5.0:
+                    # Fix 3: Scale filter parameters down with noise floor instead of hard clamping to 6.5/7.5/5.5
+                    h_bg = max(1.2, 0.95 * sigma_noise)
+                else:
+                    h_bg = max(6.5, 0.95 * sigma_noise)
+                # G1 note: an h_bg cap here was tried and removed — it broke the
+                # noise-reduction contract on all-noise frames (sigma 15 -> 8.9).
+                # Texture/contour preservation is owned by the coherence-gated
+                # protect map below and the HF re-injection guard, not by
+                # weakening the filter globally. The J-8 cap above targets only
+                # the DAMAGE branch, where σ is polluted by damage energy.
+                if _denoise_gate and noise_score_meta is not None and not bg_damaged and sigma_noise <= 5.0:
+                    h_mid = max(1.2, 1.10 * sigma_noise)
+                else:
+                    h_mid = max(7.5, 1.10 * sigma_noise)
+                    if _nlm_cap > 0 and bg_damaged:
+                        h_mid = min(h_mid, _nlm_cap * 0.85)
 
-            # Face zone: cap at 1.10x sigma regardless of small-face flag to retain skin texture.
-            if is_small_face and sigma_noise > 4.0:
-                h_face = min(max(7.0, 1.10 * sigma_noise), 12.0)
-            elif _denoise_gate and noise_score_meta is not None and not bg_damaged and sigma_noise <= 5.0:
-                h_face = max(1.2, 0.95 * sigma_noise)
-            else:
-                h_face = max(5.5, 0.95 * sigma_noise)
-            if _nlm_cap > 0:
-                h_face = min(h_face, _nlm_cap)
+                # Face zone: cap at 1.10x sigma regardless of small-face flag to retain skin texture.
+                if is_small_face and sigma_noise > 4.0:
+                    h_face = min(max(7.0, 1.10 * sigma_noise), 12.0)
+                elif _denoise_gate and noise_score_meta is not None and not bg_damaged and sigma_noise <= 5.0:
+                    h_face = max(1.2, 0.95 * sigma_noise)
+                else:
+                    h_face = max(5.5, 0.95 * sigma_noise)
+                if _nlm_cap > 0:
+                    h_face = min(h_face, _nlm_cap)
 
-            # 1. Background: Substantial NLM
-            l_bg = cv2.fastNlMeansDenoising(l_chan, None, h=h_bg, templateWindowSize=7, searchWindowSize=21)
-            # 2. Mid-zone (subject clothing/hair): Balanced NLM
-            l_mid = cv2.fastNlMeansDenoising(l_chan, None, h=h_mid, templateWindowSize=7, searchWindowSize=21)
-            # 3. Face: Adaptive NLM preserving anatomy or smoothing noise
-            l_face = cv2.fastNlMeansDenoising(l_chan, None, h=h_face, templateWindowSize=5, searchWindowSize=15)
+            if _adaptive_nlm:
+                l_bg = cv2.fastNlMeansDenoising(l_chan, None, h=h_bg, templateWindowSize=7, searchWindowSize=17)
+                l_mid = cv2.fastNlMeansDenoising(l_chan, None, h=h_mid, templateWindowSize=7, searchWindowSize=17)
+                l_face = cv2.fastNlMeansDenoising(l_chan, None, h=h_face, templateWindowSize=5, searchWindowSize=13)
+            else:
+                # 1. Background: Substantial NLM
+                l_bg = cv2.fastNlMeansDenoising(l_chan, None, h=h_bg, templateWindowSize=7, searchWindowSize=21)
+                # 2. Mid-zone (subject clothing/hair): Balanced NLM
+                l_mid = cv2.fastNlMeansDenoising(l_chan, None, h=h_mid, templateWindowSize=7, searchWindowSize=21)
+                # 3. Face: Adaptive NLM preserving anatomy or smoothing noise
+                l_face = cv2.fastNlMeansDenoising(l_chan, None, h=h_face, templateWindowSize=5, searchWindowSize=15)
 
             # Compute luminance edge energy using pre-smoothed L-channel so high-frequency noise spikes
             # do not register as structural edges.
@@ -537,7 +560,24 @@ class FinishStagesMixin:
                 raw_texture * 0.35,
             ) if _struct_guard else raw_texture * max(0.0, 1.0 - sigma_noise / 15.0)
 
-            protect_map = np.maximum(edge_weight, texture_weight)
+            _tex_rec = os.environ.get("PIXREVIVE_TEXTURE_RECOVERY", "0").strip().lower() in ("1", "true", "yes", "on")
+            if _tex_rec:
+                try:
+                    from ai.analysis.line_structure import LineStructureAnalyzer
+                    _field = LineStructureAnalyzer().compute_tensor_field(l_chan)
+                    _coh = _field.get("coherence")
+                    if _coh is not None:
+                        _coh_weight = np.clip((_coh - 0.20) / 0.25, 0.0, 1.0)
+                        protect_map = np.maximum(np.maximum(edge_weight, texture_weight), _coh_weight)
+                    else:
+                        protect_map = np.maximum(edge_weight, texture_weight)
+                        _coh_weight = None
+                except Exception:
+                    protect_map = np.maximum(edge_weight, texture_weight)
+                    _coh_weight = None
+            else:
+                protect_map = np.maximum(edge_weight, texture_weight)
+                _coh_weight = None
 
             l_fused = (
                 l_face.astype(np.float32) * mask_face +
@@ -552,6 +592,10 @@ class FinishStagesMixin:
             else:
                 l_edge_ref = l_chan.astype(np.float32)
                 max_protect = 0.50
+
+            if _tex_rec and _coh_weight is not None:
+                l_edge_ref = l_edge_ref * (1.0 - _coh_weight) + l_chan.astype(np.float32) * _coh_weight
+                max_protect = max_protect * (1.0 - _coh_weight) + 0.75 * _coh_weight
 
             l_fused = l_fused * (1.0 - max_protect * protect_map) + l_edge_ref * (max_protect * protect_map)
             l_fused_uint8 = np.clip(l_fused, 0, 255).astype(np.uint8)

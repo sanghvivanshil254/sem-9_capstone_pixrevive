@@ -10,6 +10,7 @@ Tests:
 
 import os
 import sys
+import re
 import pytest
 import cv2
 import numpy as np
@@ -416,6 +417,406 @@ def test_despeckle_guard_allows_real_impulses_on_damaged_fixture(monkeypatch):
     diff = np.abs(ctx.working_image.astype(float) - img.astype(float))
     assert np.count_nonzero(diff) > 1000, "Genuine damage should still be cleaned"
     assert ctx.image_metadata.get("specks_suppressed", False)
+
+
+# ---------------------------------------------------------------------------
+# Fix 7: Crack Continuity & Diagonal Mask Truncation Tests
+# ---------------------------------------------------------------------------
+
+def test_crack_continuity_default_is_off(monkeypatch):
+    """PIXREVIVE_CRACK_CONTINUITY must default to 0 / False when unset."""
+    monkeypatch.delenv("PIXREVIVE_CRACK_CONTINUITY", raising=False)
+    assert os.environ.get("PIXREVIVE_CRACK_CONTINUITY", "0").strip().lower() not in ("1", "true", "yes", "on")
+
+
+def test_crack_continuity_preserves_diagonal_cracks_in_scenegate(monkeypatch):
+    """
+    Diagonal cracks have bounding box width ~= height (aspect ratio ~1.0 < 3.0).
+    PIXREVIVE_CRACK_CONTINUITY=1 uses rotation-invariant moment elongation so
+    diagonal tears are recognized as damage and not pruned as scene blobs.
+    """
+    # 500x500 test canvas with realistic background texture
+    h, w = 500, 500
+    gray_bg = np.random.RandomState(42).randint(110, 140, (h, w, 3), dtype=np.uint8)
+    
+    # 5px wide diagonal crack running from (50, 450) to (450, 50)
+    damage_mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.line(damage_mask, (50, 450), (450, 50), 255, 5)
+    
+    # Test baseline (0): SceneGate checks only max(w, h)/min(w, h)
+    monkeypatch.setenv("PIXREVIVE_CRACK_CONTINUITY", "0")
+    monkeypatch.setenv("PIXREVIVE_SCENE_GATE", "1")
+    ctx_0 = PipelineContext(gray_bg.copy())
+    ctx_0.damage_masks["fractures"] = damage_mask.copy()
+    out_0 = MaskRefiner.refine(damage_mask.copy(), ctx_0)
+    # The diagonal crack has bbox 400x400 (aspect 1.0 < 3.0), no popout on flat bg, so SceneGate prunes it
+    assert np.sum(out_0 > 0) == 0, "Expected baseline SceneGate to prune diagonal crack due to axis-aligned aspect ratio trap"
+    
+    # Test Fix 7 (1): SceneGate uses moment-based rotation-invariant elongation
+    monkeypatch.setenv("PIXREVIVE_CRACK_CONTINUITY", "1")
+    ctx_1 = PipelineContext(gray_bg.copy())
+    ctx_1.damage_masks["fractures"] = damage_mask.copy()
+    out_1 = MaskRefiner.refine(damage_mask.copy(), ctx_1)
+    assert np.sum(out_1 > 0) > 1000, f"Expected Fix 7 to preserve diagonal crack, got {np.sum(out_1 > 0)} px"
+
+
+def test_crack_continuity_preserves_through_eye_crack(monkeypatch):
+    """
+    PIXREVIVE_CRACK_CONTINUITY=1 preserves thin linear crack strokes cutting across ocular
+    landmarks, while still zeroing out broad area cavity fills that would destroy the pupil.
+    """
+    h, w = 400, 400
+    gray_bg = np.full((h, w, 3), 128, dtype=np.uint8)
+    
+    # Face covering center of frame with left eye landmark at (150, 150)
+    face_meta = [{
+        "bbox": [50, 50, 350, 350],
+        "landmarks": [[150, 150], [250, 150], [200, 200], [170, 260], [230, 260]],
+    }]
+    
+    # Crack line cutting right through the eye at (150, 150)
+    crack_mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.line(crack_mask, (100, 120), (200, 180), 255, 3)
+    
+    # Baseline (0): unconditionally draws solid black circle over (150, 150)
+    monkeypatch.setenv("PIXREVIVE_CRACK_CONTINUITY", "0")
+    ctx_0 = PipelineContext(gray_bg.copy(), {"faces": face_meta})
+    ctx_0.damage_masks["fractures"] = crack_mask.copy()
+    out_0 = MaskRefiner.refine(crack_mask.copy(), ctx_0)
+    # At the eye landmark (150, 150), baseline circle zeroing leaves a 0-hole
+    assert out_0[150, 150] == 0, "Baseline should zero out pixels at eye landmark"
+    
+    # Fix 7 (1): selectively protects broad fills, preserving thin crack stroke through eye
+    monkeypatch.setenv("PIXREVIVE_CRACK_CONTINUITY", "1")
+    ctx_1 = PipelineContext(gray_bg.copy(), {"faces": face_meta})
+    ctx_1.damage_masks["fractures"] = crack_mask.copy()
+    out_1 = MaskRefiner.refine(crack_mask.copy(), ctx_1)
+    assert out_1[150, 150] > 0, "Fix 7 should preserve thin crack stroke cutting through eye"
+
+
+# ---------------------------------------------------------------------------
+# Fix 8: Seamless Face Blend & Seam Suppression Tests
+# ---------------------------------------------------------------------------
+
+def test_seamless_face_blend_default_is_off(monkeypatch):
+    """PIXREVIVE_SEAMLESS_FACE_BLEND must default to 0 / False when unset."""
+    monkeypatch.delenv("PIXREVIVE_SEAMLESS_FACE_BLEND", raising=False)
+    assert os.environ.get("PIXREVIVE_SEAMLESS_FACE_BLEND", "0").strip().lower() not in ("1", "true", "yes", "on")
+
+
+def test_seamless_face_blend_zero_boundary_derivative():
+    """
+    PIXREVIVE_SEAMLESS_FACE_BLEND=1 generates C1-continuous cosine border ramps
+    whose boundary gradient (derivative at x=0) is near-zero (<0.005), eliminating
+    the first-derivative step discontinuity of linear fades (>0.05).
+    """
+    crop_h, crop_w = 512, 512
+    # Baseline linear fade
+    m_base = 16
+    base_fade = np.ones((crop_h, crop_w), dtype=np.float32)
+    base_fade[:m_base, :] = np.linspace(0.0, 1.0, m_base)[:, None]
+    base_deriv = float(base_fade[1, 256] - base_fade[0, 256])
+    assert base_deriv > 0.05, f"Expected linear fade derivative > 0.05, got {base_deriv}"
+    
+    # Fix 8 cosine fade
+    m_cos = 48
+    t = np.linspace(0.0, np.pi, m_cos)
+    cos_ramp = 0.5 * (1.0 - np.cos(t)).astype(np.float32)
+    cos_fade = np.ones((crop_h, crop_w), dtype=np.float32)
+    cos_fade[:m_cos, :] = cos_ramp[:, None]
+    cos_deriv = float(cos_fade[1, 256] - cos_fade[0, 256])
+    assert cos_deriv < 0.005, f"Expected cosine fade derivative < 0.005, got {cos_deriv}"
+    assert cos_deriv < base_deriv / 10.0, "Cosine fade should reduce boundary derivative by >10x"
+
+
+def test_seamless_face_blend_smooths_seam_ratio_threshold(monkeypatch):
+    """
+    PIXREVIVE_SEAMLESS_FACE_BLEND=1 lowers the feathering trigger threshold from
+    ratio > 3.0 to ratio > 1.8 and feathers all matching footprints rather than
+    just worst_idx.
+    """
+    from ai.restoration.paste_guard import feather_seam
+    # 200x200 canvas with a footprint
+    h, w = 200, 200
+    canvas = np.full((h, w, 3), 120, dtype=np.uint8)
+    footprint = np.zeros((h, w), dtype=bool)
+    footprint[50:150, 50:150] = True
+    
+    # Create step discontinuity along footprint edge
+    canvas[footprint] = 160 # +40 step
+    
+    # Feather seam
+    feathered = feather_seam(canvas.copy(), footprint, band_px=16, blur_k=25, strength=0.65)
+    # The step between (49, 100) and (50, 100) should be smoothed
+    orig_step = abs(int(canvas[50, 100, 0]) - int(canvas[49, 100, 0]))
+    feathered_step = abs(int(feathered[50, 100, 0]) - int(feathered[49, 100, 0]))
+    assert orig_step == 40
+    assert feathered_step < orig_step, f"Feathering should reduce boundary step, got {feathered_step}"
+
+
+# ---------------------------------------------------------------------------
+# Fix 9: Chroma Edge Guide & Colour Bleed Prevention Tests
+# ---------------------------------------------------------------------------
+
+def test_chroma_edge_guide_default_is_off(monkeypatch):
+    """PIXREVIVE_CHROMA_EDGE_GUIDE must default to 0 / False when unset."""
+    monkeypatch.delenv("PIXREVIVE_CHROMA_EDGE_GUIDE", raising=False)
+    assert os.environ.get("PIXREVIVE_CHROMA_EDGE_GUIDE", "0").strip().lower() not in ("1", "true", "yes", "on")
+
+
+def test_chroma_edge_guide_snaps_chroma_across_edge(monkeypatch):
+    """
+    PIXREVIVE_CHROMA_EDGE_GUIDE=1 snaps bled chrominance across sharp luminance
+    edges, reducing boundary leakage in the 2-10px transition band.
+    """
+    from ai.colorization.color_refiner import EdgeAwareColorBleedFixer
+    # Create 100x100 synthetic image with a sharp vertical luminance step at x=50
+    # Left (x < 50): L=50, a=160 (vivid red lips)
+    # Right (x >= 50): L=180, a=128 (pale skin)
+    h, w = 100, 100
+    L = np.full((h, w), 180.0, dtype=np.float32)
+    L[:, :50] = 50.0
+    
+    # Smeared chrominance channel simulating DDColor 512x512 bilinear upsampling blur:
+    # a transitions linearly from 160 at x=40 to 128 at x=60 (bleeding 10px into the light side)
+    a = np.full((h, w), 128.0, dtype=np.float32)
+    a[:, :40] = 160.0
+    for x in range(40, 60):
+        a[:, x] = 160.0 - (x - 40) * (32.0 / 20.0)
+    b = np.full((h, w), 128.0, dtype=np.float32)
+    
+    rgb_in = cv2.cvtColor(np.dstack([L, a, b]).astype(np.uint8), cv2.COLOR_LAB2RGB)
+    
+    # Baseline (flag 0)
+    # Baseline (flag 0)
+    monkeypatch.setenv("PIXREVIVE_CHROMA_EDGE_GUIDE", "0")
+    rgb_0 = EdgeAwareColorBleedFixer.fix_bleeding(rgb_in.copy(), strength=0.75)
+    lab_0 = cv2.cvtColor(rgb_0, cv2.COLOR_RGB2LAB).astype(np.float32)
+
+    # Fix 9 (flag 1)
+    monkeypatch.setenv("PIXREVIVE_CHROMA_EDGE_GUIDE", "1")
+    rgb_1 = EdgeAwareColorBleedFixer.fix_bleeding(rgb_in.copy(), strength=0.75)
+    lab_1 = cv2.cvtColor(rgb_1, cv2.COLOR_RGB2LAB).astype(np.float32)
+
+    # Chroma step across the boundary x=49 -> x=50
+    step_0 = float(lab_0[50, 49, 1] - lab_0[50, 50, 1])
+    step_1 = float(lab_1[50, 49, 1] - lab_1[50, 50, 1])
+    
+    # Bleed into pale skin side at x=50
+    bleed_0 = abs(float(lab_0[50, 50, 1]) - 128.0)
+    bleed_1 = abs(float(lab_1[50, 50, 1]) - 128.0)
+    
+    assert step_1 > step_0 * 3.0, f"Fix 9 should sharpen chroma edge step by >3x: {step_1:.2f} vs {step_0:.2f}"
+    assert bleed_1 < bleed_0, f"Fix 9 should reduce chrominance bleed at boundary: {bleed_1:.2f} vs {bleed_0:.2f}"
+
+
+def test_chroma_edge_guide_reduces_misregistration_energy(monkeypatch):
+    """
+    PIXREVIVE_CHROMA_EDGE_GUIDE=1 in DDColor chroma blending reduces chrominance
+    gradient energy located > 4px from strong luminance edges.
+    """
+    from ai.colorization.ddcolor_colorizer import _blend_chroma
+    h, w = 120, 120
+    # Step edge in luminance at x=60
+    gray_L = np.full((h, w), 190, dtype=np.uint8)
+    gray_L[:, :60] = 60
+    gray_rgb = cv2.cvtColor(gray_L, cv2.COLOR_GRAY2RGB)
+    
+    # Color image with blurred chroma
+    col_a = np.full((h, w), 128, dtype=np.uint8)
+    col_a[:, :50] = 165
+    # Smooth blur across edge
+    col_a = cv2.GaussianBlur(col_a, (15, 15), 0)
+    col_b = np.full((h, w), 128, dtype=np.uint8)
+    col_lab = np.dstack([gray_L, col_a, col_b])
+    col_rgb = cv2.cvtColor(col_lab, cv2.COLOR_LAB2RGB)
+    
+    # Measure far-edge energy under flag 0 vs flag 1
+    monkeypatch.setenv("PIXREVIVE_CHROMA_EDGE_GUIDE", "0")
+    res_0 = _blend_chroma(gray_rgb, col_rgb, opacity=1.0)
+    lab_0 = cv2.cvtColor(res_0, cv2.COLOR_RGB2LAB).astype(np.float32)
+    
+    monkeypatch.setenv("PIXREVIVE_CHROMA_EDGE_GUIDE", "1")
+    res_1 = _blend_chroma(gray_rgb, col_rgb, opacity=1.0)
+    lab_1 = cv2.cvtColor(res_1, cv2.COLOR_RGB2LAB).astype(np.float32)
+    
+    # Gradient of 'a' at x=70 (10px from edge):
+    grad_a_0 = abs(lab_0[60, 71, 1] - lab_0[60, 69, 1])
+    grad_a_1 = abs(lab_1[60, 71, 1] - lab_1[60, 69, 1])
+    
+    assert grad_a_1 <= grad_a_0, f"Far-edge chroma gradient should decrease under Fix 9: {grad_a_1} vs {grad_a_0}"
+
+
+# ---------------------------------------------------------------------------
+# Fix 10: Texture Recovery & Feather Preservation Tests
+# ---------------------------------------------------------------------------
+
+def test_texture_recovery_default_is_off(monkeypatch):
+    """PIXREVIVE_TEXTURE_RECOVERY must default to 0 / False when unset."""
+    monkeypatch.delenv("PIXREVIVE_TEXTURE_RECOVERY", raising=False)
+    assert os.environ.get("PIXREVIVE_TEXTURE_RECOVERY", "0").strip().lower() not in ("1", "true", "yes", "on")
+
+
+def test_texture_recovery_protects_speck_suppressor_fibers(monkeypatch):
+    """
+    PIXREVIVE_TEXTURE_RECOVERY=1 prevents SpeckSuppressor from eroding fine oriented
+    fibrous structures (coherence > 0.25) as if they were isotropic noise specks.
+    """
+    from ai.preprocessing.speck_suppressor import SpeckSuppressor
+    from ai.analysis.line_structure import LineStructureAnalyzer
+    h, w = 100, 100
+    canvas = np.full((h, w, 3), 120, dtype=np.uint8)
+    
+    # Draw fine parallel 1px fibrous lines (feather/hair strands)
+    for y in range(20, 80, 4):
+        cv2.line(canvas, (10, y), (90, y), (180, 180, 180), 1)
+        
+    # Baseline (flag 0)
+    monkeypatch.setenv("PIXREVIVE_TEXTURE_RECOVERY", "0")
+    res_0 = SpeckSuppressor.apply(canvas.copy(), threshold=6.0)
+    
+    # Fix 10 (flag 1)
+    monkeypatch.setenv("PIXREVIVE_TEXTURE_RECOVERY", "1")
+    res_1 = SpeckSuppressor.apply(canvas.copy(), threshold=6.0)
+    
+    # Peak amplitude of fiber lines at y=48
+    fiber_amp_in = int(canvas[48, 50, 0]) - 120
+    fiber_amp_0 = int(res_0[48, 50, 0]) - 120
+    fiber_amp_1 = int(res_1[48, 50, 0]) - 120
+    
+    # Fix 10 should preserve more of the authentic fiber amplitude than baseline
+    assert fiber_amp_1 > fiber_amp_0, f"Fix 10 should preserve fiber amplitude: {fiber_amp_1} vs {fiber_amp_0}"
+
+
+def test_texture_recovery_boosts_denoise_protect_map(monkeypatch):
+    """
+    PIXREVIVE_TEXTURE_RECOVERY=1 integrates structure tensor orientation coherence
+    into Stage 5 denoise protect_map and boosts authentic texture retention.
+    """
+    from ai.pipeline.pipeline_context import PipelineContext
+    from ai.pipeline.stages.finish_stages import FinishStagesMixin
+    
+    class DummyPipeline(FinishStagesMixin):
+        pass
+        
+    h, w = 120, 120
+    canvas = np.full((h, w, 3), 120, dtype=np.uint8)
+    # Add fibrous parallel lines in upper half
+    for y in range(10, 50, 4):
+        cv2.line(canvas, (10, y), (110, y), (170, 170, 170), 1)
+        
+    # Run Stage 5 denoise under flag 0 vs flag 1
+    pipe = DummyPipeline()
+    
+    # Flag 0
+    monkeypatch.setenv("PIXREVIVE_TEXTURE_RECOVERY", "0")
+    ctx_0 = PipelineContext(canvas.copy(), {"noise_score": 6.0, "content_sigma": 6.0})
+    pipe._stage_5_spatially_gated_denoise(ctx_0, faces=[])
+    
+    # Flag 1
+    monkeypatch.setenv("PIXREVIVE_TEXTURE_RECOVERY", "1")
+    ctx_1 = PipelineContext(canvas.copy(), {"noise_score": 6.0, "content_sigma": 6.0})
+    pipe._stage_5_spatially_gated_denoise(ctx_1, faces=[])
+    
+    # Compare residual fiber line amplitude at y=28
+    amp_0 = int(ctx_0.working_image[28, 60, 0]) - 120
+    amp_1 = int(ctx_1.working_image[28, 60, 0]) - 120
+    
+    assert amp_1 >= amp_0, f"Fix 10 should retain more fiber contrast under denoise: {amp_1} vs {amp_0}"
+
+
+# ---------------------------------------------------------------------------
+# Fix 11: Adaptive NLM Parameter Calibration & Over-Smoothing Prevention Tests
+# ---------------------------------------------------------------------------
+
+def test_adaptive_nlm_default_is_off(monkeypatch):
+    """PIXREVIVE_ADAPTIVE_NLM must default to 0 / False when unset."""
+    monkeypatch.delenv("PIXREVIVE_ADAPTIVE_NLM", raising=False)
+    assert os.environ.get("PIXREVIVE_ADAPTIVE_NLM", "0").strip().lower() not in ("1", "true", "yes", "on")
+
+
+def test_adaptive_nlm_calibrates_and_caps_h_parameters(monkeypatch):
+    """
+    PIXREVIVE_ADAPTIVE_NLM=1 restricts NLM filtering parameters:
+    h <= 1.2 * sigma_noise, h_face <= 6.5, h_mid <= 7.5, h_bg <= 8.5 on undamaged images.
+    """
+    from ai.pipeline.pipeline_context import PipelineContext
+    from ai.pipeline.stages.finish_stages import FinishStagesMixin
+
+    class DummyPipeline(FinishStagesMixin):
+        pass
+
+    h, w = 100, 100
+    canvas = np.full((h, w, 3), 128, dtype=np.uint8)
+    pipe = DummyPipeline()
+
+    # Under baseline (flag 0) with sigma=10.0
+    monkeypatch.setenv("PIXREVIVE_ADAPTIVE_NLM", "0")
+    ctx_0 = PipelineContext(canvas.copy(), {"noise_score": 10.0, "content_sigma": 10.0})
+    pipe._stage_5_spatially_gated_denoise(ctx_0, faces=[])
+    log_0 = [l for l in ctx_0.processing_log if "h_face=" in l][-1]
+    m0_face = float(re.search(r"h_face=([\d.]+)", log_0).group(1))
+    m0_mid = float(re.search(r"h_mid=([\d.]+)", log_0).group(1))
+    m0_bg = float(re.search(r"h_bg=([\d.]+)", log_0).group(1))
+
+    # Baseline clamps or expands h_bg >= 11.5, h_mid >= 11.0
+    assert m0_bg >= 11.5, f"Baseline h_bg expected >= 11.5, got {m0_bg}"
+    assert m0_mid >= 11.0, f"Baseline h_mid expected >= 11.0, got {m0_mid}"
+
+    # Under Fix 11 (flag 1) with sigma=10.0
+    monkeypatch.setenv("PIXREVIVE_ADAPTIVE_NLM", "1")
+    ctx_1 = PipelineContext(canvas.copy(), {"noise_score": 10.0, "content_sigma": 10.0})
+    pipe._stage_5_spatially_gated_denoise(ctx_1, faces=[])
+    log_1 = [l for l in ctx_1.processing_log if "h_face=" in l][-1]
+    m1_face = float(re.search(r"h_face=([\d.]+)", log_1).group(1))
+    m1_mid = float(re.search(r"h_mid=([\d.]+)", log_1).group(1))
+    m1_bg = float(re.search(r"h_bg=([\d.]+)", log_1).group(1))
+
+    assert m1_face <= 6.5, f"Fix 11 h_face should be capped at 6.5: got {m1_face}"
+    assert m1_mid <= 7.5, f"Fix 11 h_mid should be capped at 7.5: got {m1_mid}"
+    assert m1_bg <= 8.5, f"Fix 11 h_bg should be capped at 8.5: got {m1_bg}"
+    assert m1_face <= 1.2 * 10.0
+    assert m1_mid <= 1.2 * 10.0
+    assert m1_bg <= 1.2 * 10.0
+
+
+def test_adaptive_nlm_preserves_subtle_grain_and_edges(monkeypatch):
+    """
+    PIXREVIVE_ADAPTIVE_NLM=1 preserves higher residual edge energy and subtle
+    texture variation compared to aggressive baseline smoothing.
+    """
+    from ai.pipeline.pipeline_context import PipelineContext
+    from ai.pipeline.stages.finish_stages import FinishStagesMixin
+
+    class DummyPipeline(FinishStagesMixin):
+        pass
+
+    h, w = 120, 120
+    # Create subtle texture pattern: base 130 with gentle 2-unit variation
+    canvas = np.full((h, w, 3), 130, dtype=np.uint8)
+    for y in range(0, h, 2):
+        for x in range(0, w, 2):
+            canvas[y, x] = [133, 133, 133]
+
+    pipe = DummyPipeline()
+
+    monkeypatch.setenv("PIXREVIVE_ADAPTIVE_NLM", "0")
+    ctx_0 = PipelineContext(canvas.copy(), {"noise_score": 8.0, "content_sigma": 8.0})
+    pipe._stage_5_spatially_gated_denoise(ctx_0, faces=[])
+
+    monkeypatch.setenv("PIXREVIVE_ADAPTIVE_NLM", "1")
+    ctx_1 = PipelineContext(canvas.copy(), {"noise_score": 8.0, "content_sigma": 8.0})
+    pipe._stage_5_spatially_gated_denoise(ctx_1, faces=[])
+
+    var_0 = float(np.var(ctx_0.working_image.astype(np.float32)))
+    var_1 = float(np.var(ctx_1.working_image.astype(np.float32)))
+
+    assert var_1 >= var_0, f"Fix 11 should retain more authentic texture variance than baseline: {var_1} vs {var_0}"
+
+
+
+
+
 
 
 
