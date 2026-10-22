@@ -4,8 +4,16 @@ from fastapi.staticfiles import StaticFiles
 import logging
 import os
 from routers import image_router, admin_router
+from contextlib import asynccontextmanager
+from database import connect_db, close_db
 
-app = FastAPI(title="PixRevive API", description="AI-powered image restoration backend")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await connect_db()
+    yield
+    await close_db()
+
+app = FastAPI(title="PixRevive API", description="AI-powered image restoration backend", lifespan=lifespan)
 
 TRAINING_DATA_DIR = os.path.join(os.path.dirname(__file__), "training_data")
 os.makedirs(os.path.join(TRAINING_DATA_DIR, "bw"), exist_ok=True)

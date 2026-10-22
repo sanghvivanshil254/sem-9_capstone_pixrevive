@@ -35,7 +35,7 @@ function ArchitectureSvg() {
   return (
     <div className="w-full bg-white border border-stone-200 rounded-xl p-3 sm:p-5 shadow-xs overflow-hidden">
       <div className="w-full overflow-x-auto touch-scroll-x overscroll-x-contain pb-2">
-        <div className="min-w-[580px] sm:min-w-[680px] lg:min-w-0">
+        <div className="min-w-145 sm:min-w-170 lg:min-w-0">
           <svg viewBox="0 0 760 300" className="w-full h-auto" role="img" aria-label="Architecture diagram: browser to FastAPI to pipeline to models">
             <defs>
               <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#78716c"/></marker>
@@ -97,7 +97,7 @@ export default function DevWeights() {
       <div className="w-full max-w-7xl mx-auto px-3.5 sm:px-6 md:px-10 lg:px-12 py-4 sm:py-8">
         <Link
           to="/"
-          className="flex items-center gap-2 text-stone-600 hover:text-stone-900 active:text-black transition-colors mb-4 sm:mb-6 font-medium text-xs sm:text-sm w-fit min-h-[44px] px-1"
+          className="flex items-center gap-2 text-stone-600 hover:text-stone-900 active:text-black transition-colors mb-4 sm:mb-6 font-medium text-xs sm:text-sm w-fit min-h-11 px-1"
         >
           <ArrowLeft className="w-4 h-4 shrink-0" /> Back to Application
         </Link>
@@ -444,7 +444,7 @@ export default function DevWeights() {
                 <div className="space-y-3">
                   {FAQ.map(([q, a]) => (
                     <details key={q} className="group border border-stone-200 rounded-lg">
-                      <summary className="cursor-pointer px-3.5 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-semibold text-stone-800 hover:bg-stone-50 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 select-none min-h-[44px] flex items-center">
+                      <summary className="cursor-pointer px-3.5 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-semibold text-stone-800 hover:bg-stone-50 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 select-none min-h-11 flex items-center">
                         {q}
                       </summary>
                       <p className="px-3.5 sm:px-4 pb-3 pt-1 text-xs text-stone-600 leading-relaxed">{a}</p>

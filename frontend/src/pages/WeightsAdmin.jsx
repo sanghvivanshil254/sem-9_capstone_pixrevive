@@ -257,7 +257,7 @@ export default function WeightsAdmin() {
           </span>
         </div>
         <div className="w-full overflow-x-auto touch-scroll-x">
-          <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto min-w-[280px] bg-stone-50/50 border border-stone-200 rounded-xl p-2">
+          <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto min-w-70 bg-stone-50/50 border border-stone-200 rounded-xl p-2">
             {[0, 0.25, 0.5, 0.75, 1].map((ratio, i) => {
               const val = maxLoss * ratio;
               const y = getY(val);
@@ -353,7 +353,7 @@ export default function WeightsAdmin() {
           <span className="flex items-center gap-1.5 text-emerald-600"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0"></span>Combined Acc</span>
         </div>
         <div className="w-full overflow-x-auto touch-scroll-x">
-          <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto min-w-[280px] bg-stone-50/50 border border-stone-200 rounded-xl p-2">
+          <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto min-w-70 bg-stone-50/50 border border-stone-200 rounded-xl p-2">
             {[50, 62.5, 75, 87.5, 100].map((yVal, i) => {
               const y = getY(yVal);
               return (
@@ -605,12 +605,12 @@ export default function WeightsAdmin() {
 
   return (
     <div className="admin-page-container flex flex-col pt-2 sm:pt-4 w-full">
-      <div className="w-full max-w-7xl mx-auto px-3.5 sm:px-6 md:px-10 lg:px-12 py-4 sm:py-8 flex-grow">
+      <div className="w-full max-w-7xl mx-auto px-3.5 sm:px-6 md:px-10 lg:px-12 py-4 sm:py-8 grow">
         
         {/* Header Navigation */}
         <button 
           onClick={() => navigate('/')}
-          className="flex items-center gap-2 text-stone-600 hover:text-stone-900 active:text-black transition-colors mb-4 sm:mb-8 font-medium text-xs sm:text-sm w-fit min-h-[44px] px-1"
+          className="flex items-center gap-2 text-stone-600 hover:text-stone-900 active:text-black transition-colors mb-4 sm:mb-8 font-medium text-xs sm:text-sm w-fit min-h-11 px-1"
         >
           <ArrowLeft className="w-4 h-4 shrink-0" /> Back to Application
         </button>
@@ -699,7 +699,7 @@ export default function WeightsAdmin() {
                   accept=".pth" 
                   onChange={(e) => handleDrop(e, 'restorer')} 
                 />
-                <label htmlFor="restorer-upload" className="cursor-pointer flex flex-col items-center w-full min-h-[44px]">
+                <label htmlFor="restorer-upload" className="cursor-pointer flex flex-col items-center w-full min-h-11">
                   {restorerStatus === 'uploading' ? (
                     <div className="w-8 h-8 sm:w-10 sm:h-10 border-4 border-stone-200 border-t-indigo-500 rounded-full animate-spin mb-3"></div>
                   ) : restorerStatus === 'success' ? (
@@ -826,7 +826,7 @@ export default function WeightsAdmin() {
                 {trainingState.status === 'running' && (
                   <div className="space-y-2">
                     <div className="flex justify-between items-center text-xs">
-                      <span className="text-stone-500 font-medium truncate max-w-[200px]" title={trainingState.message}>
+                      <span className="text-stone-500 font-medium truncate max-w-50" title={trainingState.message}>
                         {trainingState.message}
                       </span>
                       <span className="text-indigo-600 font-bold ml-2">{trainingState.progress}%</span>
@@ -844,7 +844,7 @@ export default function WeightsAdmin() {
                   type="button"
                   onClick={handleStartTraining}
                   disabled={isTraining || totalPairs === 0}
-                  className="w-full bg-stone-950 hover:bg-stone-800 disabled:bg-stone-100 disabled:text-stone-400 border border-transparent disabled:border-stone-200 text-stone-100 font-semibold py-3 px-4 rounded-xl transition-all shadow-sm flex items-center justify-center gap-2 text-xs sm:text-sm cursor-pointer min-h-[44px]"
+                  className="w-full bg-stone-950 hover:bg-stone-800 disabled:bg-stone-100 disabled:text-stone-400 border border-transparent disabled:border-stone-200 text-stone-100 font-semibold py-3 px-4 rounded-xl transition-all shadow-sm flex items-center justify-center gap-2 text-xs sm:text-sm cursor-pointer min-h-11"
                 >
                   {isTraining ? (
                     <>
@@ -862,7 +862,7 @@ export default function WeightsAdmin() {
             </div>
 
             {/* Terminal Live Output logs */}
-            <div className="xl:col-span-2 cream-card p-4 sm:p-6 flex flex-col min-h-[260px]">
+            <div className="xl:col-span-2 cream-card p-4 sm:p-6 flex flex-col min-h-65">
               <div className="flex items-center justify-between mb-3 border-b border-stone-200 pb-2.5">
                 <h3 className="text-base sm:text-lg font-serif text-stone-800 flex items-center gap-2">
                   <TerminalSquare className="w-4 h-4 sm:w-5 sm:h-5 text-stone-600 shrink-0" /> Training Terminal Output
@@ -870,7 +870,7 @@ export default function WeightsAdmin() {
                 <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" title="System online"></span>
               </div>
               
-              <div className="training-terminal flex-grow p-3 sm:p-4 text-[11px] sm:text-xs text-stone-300 font-mono overflow-y-auto max-h-[220px] rounded-lg space-y-1.5 touch-scroll-y">
+              <div className="training-terminal grow p-3 sm:p-4 text-[11px] sm:text-xs text-stone-300 font-mono overflow-y-auto max-h-55 rounded-lg space-y-1.5 touch-scroll-y">
                 {terminalLogs.length === 0 ? (
                   <div className="text-stone-500 italic text-center py-10">
                     Terminal idle. Click "Start Training Pipeline" to spawn training logs.
@@ -992,7 +992,7 @@ export default function WeightsAdmin() {
             <button 
               type="button"
               onClick={() => setShowAddForm(!showAddForm)}
-              className="flex items-center gap-2 bg-stone-900 hover:bg-stone-800 active:bg-black text-stone-100 px-3.5 py-2.5 rounded-lg font-medium text-xs sm:text-sm transition-colors self-start sm:self-center min-h-[44px] cursor-pointer"
+              className="flex items-center gap-2 bg-stone-900 hover:bg-stone-800 active:bg-black text-stone-100 px-3.5 py-2.5 rounded-lg font-medium text-xs sm:text-sm transition-colors self-start sm:self-center min-h-11 cursor-pointer"
             >
               <Plus className="w-4 h-4 shrink-0" />
               <span>{showAddForm ? 'Cancel Direct Upload' : 'Add Single Pair'}</span>
@@ -1033,7 +1033,7 @@ export default function WeightsAdmin() {
                   className={`drop-zone p-6 sm:p-8 flex flex-col items-center justify-center text-center cursor-pointer ${zipStatus}`}
                 >
                   <input type="file" id="zip-upload" className="hidden" accept=".zip" onChange={handleZipDrop} />
-                  <label htmlFor="zip-upload" className="cursor-pointer flex flex-col items-center w-full min-h-[44px]">
+                  <label htmlFor="zip-upload" className="cursor-pointer flex flex-col items-center w-full min-h-11">
                     {zipStatus === 'uploading' ? (
                       <div className="w-8 h-8 sm:w-10 sm:h-10 border-4 border-stone-200 border-t-indigo-500 rounded-full animate-spin mb-3"></div>
                     ) : zipStatus === 'success' ? (
@@ -1056,7 +1056,7 @@ export default function WeightsAdmin() {
                 <Plus className="w-5 h-5 text-stone-600 shrink-0" /> Direct Pair Upload
               </h3>
               
-              <form onSubmit={handleAddPair} className="space-y-4 flex-grow flex flex-col justify-between">
+              <form onSubmit={handleAddPair} className="space-y-4 grow flex flex-col justify-between">
                 <div className="space-y-3">
                   <div>
                     <label className="block text-xs font-semibold text-stone-700 uppercase tracking-wider mb-1">
@@ -1067,7 +1067,7 @@ export default function WeightsAdmin() {
                       accept="image/*"
                       disabled={!showAddForm}
                       onChange={(e) => setNewBwFile(e.target.files?.[0] || null)}
-                      className="w-full text-xs text-stone-600 file:mr-2 file:py-2 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-stone-100 file:text-stone-700 hover:file:bg-stone-200 cursor-pointer min-h-[36px]"
+                      className="w-full text-xs text-stone-600 file:mr-2 file:py-2 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-stone-100 file:text-stone-700 hover:file:bg-stone-200 cursor-pointer min-h-9"
                     />
                   </div>
                   <div>
@@ -1079,7 +1079,7 @@ export default function WeightsAdmin() {
                       accept="image/*"
                       disabled={!showAddForm}
                       onChange={(e) => setNewColorFile(e.target.files?.[0] || null)}
-                      className="w-full text-xs text-stone-600 file:mr-2 file:py-2 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-stone-100 file:text-stone-700 hover:file:bg-stone-200 cursor-pointer min-h-[36px]"
+                      className="w-full text-xs text-stone-600 file:mr-2 file:py-2 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-stone-100 file:text-stone-700 hover:file:bg-stone-200 cursor-pointer min-h-9"
                     />
                   </div>
                 </div>
@@ -1087,7 +1087,7 @@ export default function WeightsAdmin() {
                 <button 
                   type="submit"
                   disabled={!showAddForm || addStatus === 'submitting' || !newBwFile || !newColorFile}
-                  className="w-full mt-4 bg-stone-800 hover:bg-stone-700 active:bg-black disabled:bg-stone-200 disabled:text-stone-400 text-stone-100 font-semibold py-2.5 rounded-lg text-xs sm:text-sm transition-colors flex items-center justify-center gap-2 min-h-[44px] cursor-pointer"
+                  className="w-full mt-4 bg-stone-800 hover:bg-stone-700 active:bg-black disabled:bg-stone-200 disabled:text-stone-400 text-stone-100 font-semibold py-2.5 rounded-lg text-xs sm:text-sm transition-colors flex items-center justify-center gap-2 min-h-11 cursor-pointer"
                 >
                   {addStatus === 'submitting' ? (
                     <>
@@ -1119,20 +1119,20 @@ export default function WeightsAdmin() {
               
               <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                 {/* Search Input */}
-                <div className="relative w-full sm:w-auto min-w-[200px] flex-grow">
+                <div className="relative w-full sm:w-auto min-w-50 grow">
                   <Search className="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input 
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     placeholder="Search by filename..."
-                    className="w-full pl-9 pr-4 py-2 border border-stone-300 rounded-lg text-xs sm:text-sm bg-stone-50/50 focus:bg-white focus:ring-1 focus:ring-stone-400 focus:outline-none transition-colors min-h-[40px]"
+                    className="w-full pl-9 pr-4 py-2 border border-stone-300 rounded-lg text-xs sm:text-sm bg-stone-50/50 focus:bg-white focus:ring-1 focus:ring-stone-400 focus:outline-none transition-colors min-h-10"
                   />
                 </div>
 
                 {/* Select All on Page */}
                 {pairs.length > 0 && (
-                  <label className="flex items-center gap-2 border border-stone-300 rounded-lg px-3 py-2 text-xs font-semibold text-stone-700 bg-stone-50 hover:bg-stone-100 active:bg-stone-200 transition-colors cursor-pointer select-none min-h-[40px]">
+                  <label className="flex items-center gap-2 border border-stone-300 rounded-lg px-3 py-2 text-xs font-semibold text-stone-700 bg-stone-50 hover:bg-stone-100 active:bg-stone-200 transition-colors cursor-pointer select-none min-h-10">
                     <input 
                       type="checkbox"
                       checked={pairs.every(p => selectedIds.includes(p.id))}
@@ -1159,7 +1159,7 @@ export default function WeightsAdmin() {
                   <button
                     type="button"
                     onClick={handleBatchDelete}
-                    className="flex items-center gap-1.5 bg-red-50 hover:bg-red-100 active:bg-red-200 text-red-700 border border-red-200 px-3 py-2 rounded-lg font-semibold text-xs transition-colors min-h-[40px] cursor-pointer"
+                    className="flex items-center gap-1.5 bg-red-50 hover:bg-red-100 active:bg-red-200 text-red-700 border border-red-200 px-3 py-2 rounded-lg font-semibold text-xs transition-colors min-h-10 cursor-pointer"
                   >
                     <Trash2 className="w-3.5 h-3.5 shrink-0" />
                     <span>Delete ({selectedIds.length})</span>
@@ -1171,7 +1171,7 @@ export default function WeightsAdmin() {
                   <button
                     type="button"
                     onClick={handleDeleteAll}
-                    className="flex items-center gap-1.5 bg-stone-100 hover:bg-red-50 active:bg-red-100 text-stone-600 hover:text-red-700 border border-stone-200 hover:border-red-200 px-3 py-2 rounded-lg font-semibold text-xs transition-colors min-h-[40px] cursor-pointer"
+                    className="flex items-center gap-1.5 bg-stone-100 hover:bg-red-50 active:bg-red-100 text-stone-600 hover:text-red-700 border border-stone-200 hover:border-red-200 px-3 py-2 rounded-lg font-semibold text-xs transition-colors min-h-10 cursor-pointer"
                   >
                     <Trash2 className="w-3.5 h-3.5 shrink-0" />
                     <span>Wipe All</span>
@@ -1191,7 +1191,7 @@ export default function WeightsAdmin() {
                     setCurrentPage(prev);
                     fetchPairs(prev, searchQuery);
                   }}
-                  className="p-2 rounded-lg border border-stone-300 hover:bg-stone-100 disabled:opacity-30 disabled:hover:bg-transparent transition-colors min-h-[40px] min-w-[40px] flex items-center justify-center cursor-pointer"
+                  className="p-2 rounded-lg border border-stone-300 hover:bg-stone-100 disabled:opacity-30 disabled:hover:bg-transparent transition-colors min-h-10 min-w-10 flex items-center justify-center cursor-pointer"
                   aria-label="Previous chunk"
                 >
                   <ChevronLeft className="w-4 h-4" />
@@ -1207,7 +1207,7 @@ export default function WeightsAdmin() {
                     setCurrentPage(next);
                     fetchPairs(next, searchQuery);
                   }}
-                  className="p-2 rounded-lg border border-stone-300 hover:bg-stone-100 disabled:opacity-30 disabled:hover:bg-transparent transition-colors min-h-[40px] min-w-[40px] flex items-center justify-center cursor-pointer"
+                  className="p-2 rounded-lg border border-stone-300 hover:bg-stone-100 disabled:opacity-30 disabled:hover:bg-transparent transition-colors min-h-10 min-w-10 flex items-center justify-center cursor-pointer"
                   aria-label="Next chunk"
                 >
                   <ChevronRight className="w-4 h-4" />
@@ -1235,7 +1235,7 @@ export default function WeightsAdmin() {
                       }`}
                     >
                       {/* Checkbox Overlay */}
-                      <div className="absolute top-2 left-2 z-10 bg-white/90 backdrop-blur-xs rounded-lg p-1.5 border border-stone-200 shadow-xs flex items-center justify-center min-w-[36px] min-h-[36px]">
+                      <div className="absolute top-2 left-2 z-10 bg-white/90 backdrop-blur-xs rounded-lg p-1.5 border border-stone-200 shadow-xs flex items-center justify-center min-w-9 min-h-9">
                         <input 
                           type="checkbox"
                           checked={isChecked}
@@ -1271,7 +1271,7 @@ export default function WeightsAdmin() {
                             />
                             <label 
                               htmlFor={`update-bw-${pair.id}`} 
-                              className="cursor-pointer text-[10px] sm:text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 active:bg-black transition-colors flex items-center gap-1 shadow-sm min-h-[36px]"
+                              className="cursor-pointer text-[10px] sm:text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 active:bg-black transition-colors flex items-center gap-1 shadow-sm min-h-9"
                             >
                               <RefreshCw className="w-3 h-3 shrink-0" />
                               <span>Change B&amp;W</span>
@@ -1299,7 +1299,7 @@ export default function WeightsAdmin() {
                             />
                             <label 
                               htmlFor={`update-color-${pair.id}`} 
-                              className="cursor-pointer text-[10px] sm:text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 active:bg-black transition-colors flex items-center gap-1 shadow-sm min-h-[36px]"
+                              className="cursor-pointer text-[10px] sm:text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 active:bg-black transition-colors flex items-center gap-1 shadow-sm min-h-9"
                             >
                               <RefreshCw className="w-3 h-3 shrink-0" />
                               <span>Change Color</span>
@@ -1316,13 +1316,13 @@ export default function WeightsAdmin() {
                       <div className="flex items-center justify-between gap-1 mb-2 sm:hidden border-t border-stone-200/50 pt-1.5">
                         <label 
                           htmlFor={`update-bw-${pair.id}`} 
-                          className="flex-1 text-[10px] text-center font-medium text-stone-600 bg-stone-100 hover:bg-stone-200 active:bg-stone-300 py-1.5 px-1 rounded cursor-pointer min-h-[32px] flex items-center justify-center"
+                          className="flex-1 text-[10px] text-center font-medium text-stone-600 bg-stone-100 hover:bg-stone-200 active:bg-stone-300 py-1.5 px-1 rounded cursor-pointer min-h-8 flex items-center justify-center"
                         >
                           Change B&amp;W
                         </label>
                         <label 
                           htmlFor={`update-color-${pair.id}`} 
-                          className="flex-1 text-[10px] text-center font-medium text-stone-600 bg-stone-100 hover:bg-stone-200 active:bg-stone-300 py-1.5 px-1 rounded cursor-pointer min-h-[32px] flex items-center justify-center"
+                          className="flex-1 text-[10px] text-center font-medium text-stone-600 bg-stone-100 hover:bg-stone-200 active:bg-stone-300 py-1.5 px-1 rounded cursor-pointer min-h-8 flex items-center justify-center"
                         >
                           Change Color
                         </label>
@@ -1342,7 +1342,7 @@ export default function WeightsAdmin() {
                         <button 
                           type="button"
                           onClick={() => handleDeletePair(pair.id)}
-                          className="text-stone-400 hover:text-red-600 active:text-red-800 p-2 hover:bg-red-50 rounded-lg transition-colors shrink-0 min-h-[44px] min-w-[44px] flex items-center justify-center cursor-pointer"
+                          className="text-stone-400 hover:text-red-600 active:text-red-800 p-2 hover:bg-red-50 rounded-lg transition-colors shrink-0 min-h-11 min-w-11 flex items-center justify-center cursor-pointer"
                           title="Delete Pair"
                           aria-label={`Delete pair ${pair.original_name}`}
                         >
@@ -1367,7 +1367,7 @@ export default function WeightsAdmin() {
                     setCurrentPage(prev);
                     fetchPairs(prev, searchQuery);
                   }}
-                  className="flex items-center gap-1 text-xs sm:text-sm font-medium text-stone-600 hover:text-stone-900 disabled:opacity-40 disabled:hover:text-stone-600 transition-colors min-h-[44px] px-3 py-2 cursor-pointer"
+                  className="flex items-center gap-1 text-xs sm:text-sm font-medium text-stone-600 hover:text-stone-900 disabled:opacity-40 disabled:hover:text-stone-600 transition-colors min-h-11 px-3 py-2 cursor-pointer"
                 >
                   <ChevronLeft className="w-4 h-4 shrink-0" />
                   <span>Prev Chunk</span>
@@ -1383,7 +1383,7 @@ export default function WeightsAdmin() {
                     setCurrentPage(next);
                     fetchPairs(next, searchQuery);
                   }}
-                  className="flex items-center gap-1 text-xs sm:text-sm font-medium text-stone-600 hover:text-stone-900 disabled:opacity-40 disabled:hover:text-stone-600 transition-colors min-h-[44px] px-3 py-2 cursor-pointer"
+                  className="flex items-center gap-1 text-xs sm:text-sm font-medium text-stone-600 hover:text-stone-900 disabled:opacity-40 disabled:hover:text-stone-600 transition-colors min-h-11 px-3 py-2 cursor-pointer"
                 >
                   <span>Next Chunk</span>
                   <ChevronRight className="w-4 h-4 shrink-0" />
